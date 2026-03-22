@@ -2,522 +2,437 @@
 
 ## 1. Document Status
 
-- Status: Draft for implementation
-- Last updated: 2026-03-14
+- Status: Implemented baseline
+- Last updated: 2026-03-22
 - Target platform: macOS
 - UI language: English only
 
 ## 2. Goal
 
-Build a macOS menu bar application that manages AWS temporary credentials using 1Password as the primary secret store.
+Build a macOS menu bar application that manages AWS temporary credentials with 1Password as the primary secret store.
 
-The app must support two credential generation modes:
+The app supports two credential generation modes:
 
-1. Credential-based AWS STS
-2. AWS IAM Identity Center (AWS SSO)-based temporary credential retrieval
+1. AWS STS based generation from long-lived AWS credentials
+2. AWS IAM Identity Center based generation from SSO login
 
-For both modes, the app stores the configuration as a 1Password item in the `Private` vault with title:
+Generated credentials are written to `~/.aws/credentials` under a user-defined AWS profile name.
 
-`[aws-credential-manager] <Setting Name>`
+## 3. External Prerequisites
 
-The app shows configured items from the menu bar, lets the user generate or refresh credentials, and writes the resulting credentials to `~/.aws/credentials` under the configured AWS profile name.
+- macOS
+- 1Password desktop app
+- 1Password local desktop integration enabled
+- Access to one or more 1Password accounts and vaults
+- AWS permissions for either:
+  - STS `GetSessionToken` / `AssumeRole`
+  - IAM Identity Center `GetRoleCredentials`
 
-## 2.1 External prerequisites
+## 4. Current Product Shape
 
-- 1Password desktop app installed on macOS
-- 1Password desktop SDK integration enabled
-- Access to the `Private` vault
-- AWS account permissions for the selected STS flow
-- AWS IAM Identity Center enabled for SSO configurations
+The implemented product is a macOS menu bar app with a dedicated management window.
 
-## 3. Background and Baseline
+Major characteristics:
 
-The existing `credentials-watchdog` application already provides these baseline behaviors:
-
-- Desktop resident app behavior via tray icon
-- Local configuration management
-- MFA-assisted AWS temporary credential generation
-- Writing AWS temporary credentials into `~/.aws/credentials`
-
-The new app keeps those user-visible goals but changes the architecture substantially:
-
-- Use 1Password as the system of record for secret configuration
-- Add AWS IAM Identity Center support
-- Move to a native macOS menu bar UX
-- Use Go for credential logic
-
-## 4. High-Level Product Decision
-
-### 4.1 Recommended implementation
-
-Use a hybrid architecture:
-
-- Native shell: Swift + SwiftUI + AppKit
-- Core credential engine: Go
-
-### 4.2 Why this architecture
-
-This is the best fit for the constraints:
-
-- macOS menu bar UX is much better with AppKit/SwiftUI than with Java
-- 1Password SDK has first-class support for Go desktop integrations
-- AWS STS and IAM Identity Center flows are straightforward in Go
-- The app can remain native on macOS while still satisfying the requirement to implement the credential engine in Go
-
-### 4.3 Rejected alternatives
-
-#### Java desktop app
-
-Rejected for Phase 1 because:
-
-- The required 1Password SDK integration is better aligned with Go-based implementation
-- Native macOS menu bar behavior, security prompts, and packaging are simpler with Swift/AppKit
-- Cross-platform support is not required for the first release
-
-#### Browser scraping of the AWS access portal
-
-Rejected because:
-
-- It is brittle against AWS UI changes
-- It depends on DOM automation and login-page details
-- Official IAM Identity Center APIs can return the same short-lived AWS credentials more reliably
+- Native macOS shell implemented in SwiftUI/AppKit
+- Go helper process for AWS and 1Password operations
+- 1Password is the system of record for secrets
+- Non-secret local metadata is stored for fast startup and UI rendering
+- SSO reusable session state is also stored in 1Password and loaded into memory on startup and on demand
 
 ## 5. Scope
 
 ### 5.1 In scope
 
 - macOS menu bar app
+- Dedicated app window instead of a transient popover
 - 1Password desktop app integration
-- 1Password item create/read/update for app-managed settings
-- Credential-based temporary credentials via STS
-- IAM Identity Center temporary credentials via official AWS APIs
-- Writing credentials to `~/.aws/credentials`
-- Manual refresh
-- Optional auto-refresh
-- Remaining-session display in the menu UI
+- Config creation, edit, delete, and generate
+- Import existing 1Password items
+- Per-config 1Password account selection
+- Per-config 1Password vault selection
+- STS `GetSessionToken`
+- STS `AssumeRole`
+- IAM Identity Center browser-based OIDC login
+- Auto refresh
+- Writing `~/.aws/credentials`
+- Distributable unsigned `.app` and `.zip`
 
 ### 5.2 Out of scope
 
 - Windows support
 - App Store distribution
-- Enterprise device management
-- Browser DOM automation for AWS portal pages
-- Editing `~/.aws/config` as a required path
-- Multi-user/shared secret storage beyond the signed-in local macOS user
+- Keychain persistence for SSO session state
+- Browser DOM scraping of the AWS portal
+- Mandatory `~/.aws/config` management as the primary flow
 
-## 6. Functional Requirements
+## 6. High-Level Architecture
 
-### 6.1 App startup
+### 6.1 Process model
 
-On launch, the app must:
+The app has two cooperating parts:
 
-1. Start as a single-instance macOS menu bar app
-2. Initialize local metadata storage
-3. Initialize the Go core service
-4. Attempt a lightweight connection to the 1Password desktop app using local app integration
-5. Verify that the `Private` vault is reachable
-6. Load locally cached non-secret metadata and render the menu
+1. Swift macOS app
+2. Embedded Go helper
 
-If 1Password desktop integration is unavailable, the app must stay running and show a clear error state in the menu bar popover.
+The Swift app starts the helper as a bundled executable.
 
-### 6.2 Menu bar behavior
+### 6.2 IPC model
 
-The app must run primarily from the macOS menu bar.
+Swift and Go communicate over stdio with JSON request/response messages.
 
-Clicking the menu bar icon opens a popover or panel that lists configured items.
+Important properties:
 
-Each row must display:
+- one request per message
+- typed payloads on both sides
+- helper-side request routing
+- request timeout handling on the Swift side
 
-- Setting name
-- Remaining lifetime of the current AWS temporary credentials
-- `Generate` button
-- `Edit` button
+### 6.3 Packaging
 
-Recommended additions:
+The distributable build contains:
 
-- Auth type badge: `STS` or `SSO`
-- Auto-refresh status
-- Last refresh time
-- Error indicator for expired or failed state
+- `AWS Credential Manager.app`
+- embedded `aws-credential-manager-helper`
+- app icon and resource bundle
 
-### 6.3 Settings supported by the app
+## 7. User Experience
 
-The app must support two configuration types.
+### 7.1 Main window
 
-#### 6.3.1 Credential-based AWS STS configuration
+The menu bar icon opens a standard macOS window, not a click-away popover.
 
-Required fields:
+The window contains:
 
-- Setting name
-- Profile name
-- AWS credential for AssumeRole access key id
-- AWS credential for AssumeRole secret access key
-- MFA ARN
-- MFA TOTP field
+- helper status
+- 1Password status
+- config list
+- actions:
+  - `Add Config`
+  - `1Password Accounts`
+  - `Refresh`
+  - `Quit`
 
-Additional field added by design:
+### 7.2 Config list row
 
-- Role ARN (optional, but required when AssumeRole mode is used)
+Each config row shows:
 
-Recommended advanced fields:
+- setting name
+- auth type badge (`STS` or `SSO`)
+- profile name
+- current credential expiration state
+- row-level error state if the last generation failed
+- `Generate`
+- `Edit`
+- `Delete`
 
-- Role session name
-- External ID
-- Session duration minutes
-- STS region override
-- Auto-refresh enabled
+For SSO rows, the list also shows:
 
-Behavior:
+- refresh token presence (`Loaded` / `Missing`)
+- SSO session expiry if known
 
-- If `Role ARN` is empty, generate temporary credentials with `GetSessionToken`
-- If `Role ARN` is present, generate temporary credentials with `AssumeRole`
+### 7.3 Delete behavior
 
-#### 6.3.2 AWS IAM Identity Center configuration
+Delete requires confirmation.
 
-Required fields from the request:
+The current behavior removes the local config entry. It does not automatically delete the 1Password item.
 
-- Setting name
-- Profile name
-- SSO start URL
-- SSO region
-- Username
-- Password
-- MFA TOTP field
+### 7.4 Cancel behavior
 
-Additional required fields added by design:
+Long-running generation can be cancelled from the list.
 
-- AWS account ID
-- AWS role name
+This is especially important for SSO browser login flows.
 
-Recommended advanced fields:
+## 8. 1Password Account and Vault Model
 
-- Session duration minutes
-- Auto-refresh enabled
-- Reuse in-memory refresh state while app is running
-- Login URL override if different from start URL
+### 8.1 Account management
 
-Behavior:
+The app keeps a user-managed list of 1Password account names in local settings.
 
-- The app must use official IAM Identity Center OIDC and SSO APIs to acquire AWS temporary credentials
-- The app must not depend on scraping the AWS access portal UI
-- Username/password/TOTP are stored in 1Password because they are still useful for human login via browser autofill during the interactive device authorization flow
+The user selects one of these accounts when creating or editing a config.
 
-### 6.4 1Password item management
+Settings UI label:
 
-For either config type, the app must create one item in the `Private` vault.
+- `1Password Accounts`
 
-Item title format:
+### 8.2 Vault selection
+
+Vault is selected per config.
+
+The app does not assume a single fixed vault anymore.
+
+### 8.3 Managed item title
+
+Managed item title format:
 
 `[aws-credential-manager] <Setting Name>`
 
-The app must:
+### 8.4 Import existing item flow
 
-- Create the item if it does not exist
-- Update the item if the setting already exists
-- Store the item ID locally after creation to avoid vault-wide scans on every startup
+The app supports importing existing 1Password items with a wizard flow:
 
-### 6.5 Credential generation
+1. Select account
+2. Select vault
+3. Select item
+4. Review and save
 
-When the user clicks `Generate`, the app must:
+The item and vault lists support partial-match filtering.
 
-1. Read the target item from 1Password using its stored item ID
-2. Read secrets and settings from that item
-3. Retrieve the MFA/TOTP code from the 1Password TOTP field
-4. Execute the selected auth flow
-5. Write the resulting credentials to `~/.aws/credentials` under the configured profile name
-6. Update the in-memory and locally cached expiration metadata
-7. Refresh the menu UI
+## 9. Local Storage
 
-### 6.6 Auto-refresh
-
-Manual refresh is required.
-
-Auto-refresh is optional and disabled by default.
-
-When enabled, the app should refresh credentials before expiry using a configurable threshold. Recommended default:
-
-- Refresh when remaining lifetime is less than 10 minutes
-
-Auto-refresh expectations by mode:
-
-- Credential-based STS: supported by re-reading secrets and TOTP from 1Password; the user may need to re-authorize 1Password access if the authorization window has expired
-- SSO-based: supported only while the app process remains alive and can retain IAM Identity Center refresh state in memory
-
-After app restart, crash, or explicit sign-out, SSO auto-refresh must be unavailable until the user completes a fresh interactive login.
-
-## 7. Non-Functional Requirements
-
-### 7.1 Security
-
-- No AWS long-lived secrets may be stored in plaintext local files
-- 1Password is the source of truth for stored credentials and user login secrets
-- Local metadata file may contain only non-secret data and 1Password IDs
-- SSO access and refresh tokens must exist in memory only and must never be persisted locally
-- The app must never log access keys, secret keys, session tokens, passwords, or OTP values
-
-### 7.2 Reliability
-
-- `~/.aws/credentials` writes must be atomic
-- Existing unrelated profiles in `~/.aws/credentials` must be preserved
-- Partial failures must not corrupt the credentials file
-- The menu bar app must survive transient 1Password or AWS failures
-
-### 7.3 Performance
-
-- Startup should not scan all 1Password items if local metadata contains item IDs
-- Item resolution should be O(number of locally indexed configs), not O(vault size)
-- Refresh operations should run asynchronously and not block the UI thread
-
-### 7.4 UX
-
-- English-only UI
-- Menu-driven primary UX
-- Clear status and last error display
-- Minimal required prompts
-
-## 8. Detailed Architecture
-
-## 8.1 Process model
-
-Use two cooperating parts:
-
-1. macOS app shell
-2. Go core service
-
-Recommended packaging for Phase 1:
-
-- Swift app bundle
-- Embedded Go helper binary started by the app bundle
-- Local IPC over Unix domain socket or XPC-like request bridge
-
-Reason:
-
-- Keeps the menu bar shell native
-- Allows the credential engine to remain pure Go
-- Is simpler than binding large Go packages directly into Swift for the first release
-
-Important implication:
-
-- 1Password authorizes access on a per-process basis, so the embedded helper binary name must be stable and clearly attributable to this app in the authorization prompt
-
-### 8.2 Module breakdown
-
-#### Swift shell
-
-Responsibilities:
-
-- NSStatusItem / menu bar icon
-- Popover and settings windows
-- User interaction
-- App lifecycle
-- Triggering actions in Go core
-- Reading non-secret local metadata for fast startup
-
-#### Go core
-
-Responsibilities:
-
-- 1Password SDK integration
-- AWS STS integration
-- AWS IAM Identity Center integration
-- Credential file mutation
-- Expiration computation
-- Auto-refresh scheduler
-- Structured logging
-
-### 8.3 Local storage
-
-#### Non-secret metadata store
+### 9.1 Metadata store
 
 Location:
 
 `~/Library/Application Support/aws-credential-manager/index.json`
 
-Contains:
+Purpose:
 
-- Local config ID
-- Setting name
-- Auth type
-- Profile name
-- 1Password vault ID
-- 1Password item ID
-- Auto-refresh enabled
-- Last known expiration
-- Last refresh time
-- Last error summary
+- fast startup
+- UI rendering
+- auto-refresh scheduling
+- local mapping from config ID to 1Password item
 
-This file must not contain:
+Stored fields:
 
-- Access key ID
-- Secret access key
-- Session token
-- Password
-- OTP seed
-- IAM Identity Center access token
-- IAM Identity Center refresh token
+- local config ID
+- setting name
+- auth type
+- 1Password account name
+- profile name
+- vault ID
+- item ID
+- auto-refresh enabled
+- last known AWS credential expiration
+- last refresh time
+- last error summary
 
-#### Secure local store
+This file must not store AWS secrets or passwords.
 
-No persistent secure token store is used in Phase 1.
+### 9.2 Settings store
 
-Rules:
+Location:
 
-- IAM Identity Center access tokens may exist in memory only for the lifetime of the process
-- IAM Identity Center refresh tokens may exist in memory only for the lifetime of the process
-- On process termination, restart, or crash, the app discards all cached SSO token state
+`~/Library/Application Support/aws-credential-manager/settings.json`
 
-## 9. 1Password Data Model
+Stored fields:
 
-### 9.1 Vault
+- saved 1Password account names
+- selected default 1Password account name
 
-- Fixed vault name: `Private`
+## 10. 1Password Data Model
 
-### 9.2 Item title
+### 10.1 Item category
 
-- `[aws-credential-manager] <Setting Name>`
+Managed items use the `Login` category.
 
-### 9.3 Item category
+### 10.2 Common fields
 
-Recommended category:
+- `setting_name`
+- `account_name`
+- `profile_name`
+- `auth_type`
+- `auto_refresh_enabled`
+- `schema_version`
+- `created_by`
 
-- `Login`
+### 10.3 STS fields
 
-Reason:
+- `aws_access_key_id`
+- `aws_secret_access_key`
+- `mfa_arn`
+- `mfa_totp`
+- `role_arn`
+- `role_session_name`
+- `external_id`
+- `session_duration`
+- `sts_region`
 
-- Works well for SSO username/password/TOTP use cases
-- Supports concealed and TOTP fields cleanly
-- Still allows custom fields for AWS-specific values
+### 10.4 SSO fields
 
-### 9.4 Item fields
+- `sso_start_url`
+- `sso_issuer_url`  
+  Internal/supporting field. The current UI does not require the user to set it.
+- `sso_region`
+- `sso_username`
+- `sso_password`
+- `sso_mfa_totp`
+- `sso_account_id`
+- `sso_role_name`
+- `session_duration`
 
-Use a consistent schema with custom fields.
+### 10.5 Persisted SSO session-state fields
 
-#### Common metadata fields
+The current implementation also stores reusable SSO session state in 1Password:
 
-- `setting_name` (text)
-- `profile_name` (text)
-- `auth_type` (menu or text: `sts` / `sso`)
-- `auto_refresh_enabled` (text or menu)
-- `created_by` (text, fixed value: `aws-credential-manager`)
-- `schema_version` (text)
+- `sso_access_token`
+- `sso_access_expiry`
+- `sso_refresh_token`
+- `sso_client_id`
+- `sso_client_secret`
+- `sso_client_secret_expiry`
+- `sso_last_browser_url`
 
-#### STS fields
+Purpose:
 
-- `aws_access_key_id` (concealed)
-- `aws_secret_access_key` (concealed)
-- `mfa_arn` (text)
-- `mfa_totp` (totp)
-- `role_arn` (text, optional)
-- `role_session_name` (text, optional)
-- `external_id` (concealed, optional)
-- `session_duration_minutes` (text, optional)
-- `sts_region` (text, optional)
+- reload SSO state on app startup
+- reuse SSO refresh state on subsequent generation
+- support auto-refresh across app restart as long as the stored session state is still valid
 
-#### SSO fields
+## 11. Credential Flows
 
-- `sso_start_url` (url or text)
-- `sso_region` (text)
-- `sso_username` (text)
-- `sso_password` (concealed)
-- `sso_mfa_totp` (totp)
-- `sso_account_id` (text)
-- `sso_role_name` (text)
-- `session_duration_minutes` (text, optional)
+## 11.1 STS flow
 
-### 9.5 Local metadata to item mapping
+### 11.1.1 GetSessionToken path
 
-The app must map each local config entry to:
-
-- Vault ID
-- Item ID
-- Expected schema version
-
-If item lookup by ID fails, the app must fall back to title search for:
-
-`[aws-credential-manager] <Setting Name>`
-
-If both lookup methods fail, the UI must show the config as broken and prompt the user to repair it.
-
-## 10. AWS Credential Flows
-
-### 10.1 STS flow
-
-#### 10.1.1 GetSessionToken path
-
-Conditions:
-
-- Config type is `sts`
-- `role_arn` is empty
+Used when `role_arn` is blank.
 
 Steps:
 
-1. Read `aws_access_key_id`, `aws_secret_access_key`, `mfa_arn`, `mfa_totp`
-2. Request current OTP code from 1Password
-3. Call STS `GetSessionToken`
-4. Receive temporary credentials and expiration
-5. Write credentials to `~/.aws/credentials` under `profile_name`
+1. Read STS config from 1Password
+2. Resolve current MFA code from 1Password
+3. Call `GetSessionToken`
+4. Write returned AWS credentials to `~/.aws/credentials`
+5. Record expiration metadata locally
 
-#### 10.1.2 AssumeRole path
+### 11.1.2 AssumeRole path
 
-Conditions:
-
-- Config type is `sts`
-- `role_arn` is present
+Used when `role_arn` is present.
 
 Steps:
 
-1. Read `aws_access_key_id`, `aws_secret_access_key`, `mfa_arn`, `mfa_totp`, `role_arn`
-2. Request current OTP code from 1Password
-3. Call STS `AssumeRole`
-4. Receive temporary credentials and expiration
-5. Write credentials to `~/.aws/credentials` under `profile_name`
+1. Read STS config from 1Password
+2. Resolve current MFA code from 1Password
+3. Call `AssumeRole`
+4. Write returned AWS credentials to `~/.aws/credentials`
+5. Record expiration metadata locally
 
-Notes:
+## 11.2 SSO flow
 
-- `external_id` and `role_session_name` are optional inputs
-- `session_duration_minutes` is best-effort; AWS role policy limits still apply
+### 11.2.1 Auth model
 
-### 10.2 SSO flow
+The implemented SSO flow uses:
 
-#### 10.2.1 Recommended official flow
+- OIDC authorization code flow
+- PKCE
+- localhost callback receiver
+- AWS `GetRoleCredentials`
 
-Use:
+The app opens the default browser when interactive login is needed.
 
-- IAM Identity Center OIDC authorization flow
-- IAM Identity Center SSO API `GetRoleCredentials`
+### 11.2.2 Runtime behavior
 
-Do not use:
+On SSO `Generate`:
 
-- Portal HTML scraping
-- Simulated clicking of the portal `Access keys` button
+1. Read SSO config from 1Password
+2. Prime the in-memory session cache from persisted 1Password session-state fields
+3. If a valid access token exists, use it
+4. Else if a refresh token exists, refresh it
+5. Else start browser-based login
+6. Call `GetRoleCredentials`
+7. Write returned AWS credentials to `~/.aws/credentials`
+8. Persist updated SSO session state back to 1Password
+9. Record expiration metadata locally
 
-#### 10.2.2 SSO generation steps
+### 11.2.3 App startup behavior
 
-1. Read `sso_start_url`, `sso_region`, `sso_account_id`, `sso_role_name`
-2. Check in-memory state for reusable OIDC client registration and refresh token
-3. If a valid in-memory refresh token is available, refresh the access token
-4. Otherwise start device authorization
-5. Open the system browser to the authorization URL
-6. The user completes login in the browser
-7. 1Password browser autofill can fill username/password/TOTP if the user has that setup
-8. Poll token completion through the OIDC API
-9. Call `GetRoleCredentials`
-10. Receive AWS access key ID, secret access key, session token, and expiration
-11. Write credentials to `~/.aws/credentials` under `profile_name`
-12. If auto-refresh is enabled, retain refresh state in memory only until process exit
+On helper startup:
 
-Required OIDC scope:
+- local metadata is loaded
+- SSO configs are identified
+- each SSO config item is loaded from 1Password
+- persisted SSO session state is preloaded into the in-memory cache
 
-- `sso:account:access`
+This means the helper can reuse refresh state without waiting for the first manual generate.
 
-#### 10.2.3 Why this flow
+## 12. Auto Refresh
 
-It satisfies the user goal more robustly than portal automation:
+### 12.1 Scheduler
 
-- The resulting output is the same kind of temporary AWS credential triple
-- It uses stable APIs
-- It avoids coupling to AWS portal UI changes
-- It enables future auto-refresh
+Auto refresh is implemented as a background scheduler in the Go helper.
+
+Current behavior:
+
+- polling interval: 60 seconds
+- refresh threshold: when remaining lifetime is less than 10 minutes
+
+### 12.2 STS auto refresh
+
+For STS configs, auto refresh re-reads the 1Password item and generates fresh temporary credentials.
+
+### 12.3 SSO auto refresh
+
+For SSO configs, auto refresh uses the in-memory cache that has been preloaded from 1Password.
+
+If a valid refresh token is available, it can refresh without a full browser login.
+
+If refresh state is invalid or expired, the next interactive login is required.
+
+## 13. Reliability and Security Requirements
+
+### 13.1 Secret handling
+
+- AWS long-lived secrets are not stored in plaintext local files
+- passwords and OTP seeds live in 1Password
+- SSO session state is persisted in 1Password, not in local plaintext metadata
+- the app must not log credentials, passwords, refresh tokens, or OTP codes
+
+### 13.2 Credentials file writes
+
+`~/.aws/credentials` writes must:
+
+- preserve unrelated profiles
+- update the configured profile atomically
+- avoid partial corruption
+
+### 13.3 Failure tolerance
+
+The app should remain usable when:
+
+- 1Password is not connected
+- AWS calls fail
+- browser login is cancelled
+
+Errors must be surfaced in the UI without crashing the app.
+
+## 14. Current UI Flows
+
+### 14.1 New item flow
+
+`New Item` is a wizard:
+
+1. Select 1Password destination
+2. Configure settings
+3. Save
+
+### 14.2 Import existing flow
+
+`Import Existing` is a wizard:
+
+1. Select account
+2. Select vault
+3. Select item
+4. Review and save
+
+### 14.3 Edit flow
+
+Edit loads the linked 1Password item and opens a standard edit form.
+
+If full 1Password loading fails, the app can fall back to locally cached summary data and preserve existing secret fields when blank.
+
+## 15. Distribution
+
+The current distribution target is a local development build and GitHub Release artifact.
+
+Artifacts:
+
+- `dist/AWS Credential Manager.app`
+- `dist/aws-credential-manager-macos.zip`
+
+Current distribution notes:
+
+- unsigned development build
+- may require manual `Open` in Finder on another Mac
 
 ### 10.3 Discussion of `~/.aws/credentials` vs `~/.aws/config`
 

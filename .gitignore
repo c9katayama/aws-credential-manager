@@ -1,0 +1,7 @@
+.DS_Store
+.build/
+bin/
+app-macos/.build/
+core-go/bin/
+credentials-watchdog/
+dist/

@@ -105,6 +105,9 @@ final class AppViewModel: ObservableObject {
         if editorDraft.onePasswordAccountName.isEmpty {
           editorDraft.onePasswordAccountName = config.onePasswordAccountName
         }
+        if editorDraft.onePasswordAccountName.isEmpty {
+          editorDraft.onePasswordAccountName = settingsDraft.selectedOnePasswordAccountName
+        }
         isEditorPresented = true
         lastError = nil
         _ = await ensureOnePasswordAuthorized(accountName: editorDraft.onePasswordAccountName)
@@ -113,6 +116,9 @@ final class AppViewModel: ObservableObject {
       } catch {
         isImportCreateFlow = false
         editorDraft = ConfigDraft(config: config)
+        if editorDraft.onePasswordAccountName.isEmpty {
+          editorDraft.onePasswordAccountName = settingsDraft.selectedOnePasswordAccountName
+        }
         isEditorPresented = true
         editorError =
           "Editing with local summary only. Existing secret fields will be preserved if left blank. Underlying error: \(error.localizedDescription)"

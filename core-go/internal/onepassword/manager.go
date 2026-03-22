@@ -204,6 +204,9 @@ func (m *Manager) LoadConfigItem(ctx context.Context, summary metadata.ConfigSum
 		}
 
 		input := decodeConfigInput(item, summary.ID)
+		if strings.TrimSpace(input.OnePasswordAccountName) == "" {
+			input.OnePasswordAccountName = accountName
+		}
 		if err := m.resolveStoredSecrets(ctx, client, item, &input); err != nil {
 			return metadata.ConfigInput{}, err
 		}
@@ -227,6 +230,9 @@ func (m *Manager) LoadRuntimeConfig(ctx context.Context, summary metadata.Config
 		}
 
 		input := decodeConfigInput(item, summary.ID)
+		if strings.TrimSpace(input.OnePasswordAccountName) == "" {
+			input.OnePasswordAccountName = accountName
+		}
 		if err := m.resolveStoredSecrets(ctx, client, item, &input); err != nil {
 			return metadata.ConfigInput{}, err
 		}
@@ -248,6 +254,9 @@ func (m *Manager) LoadConfigByItem(ctx context.Context, accountName, vaultID, it
 			return metadata.ConfigInput{}, err
 		}
 		input := decodeConfigInput(item, "")
+		if strings.TrimSpace(input.OnePasswordAccountName) == "" {
+			input.OnePasswordAccountName = accountName
+		}
 		if err := m.resolveStoredSecrets(ctx, client, item, &input); err != nil {
 			return metadata.ConfigInput{}, err
 		}

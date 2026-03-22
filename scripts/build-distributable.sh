@@ -10,7 +10,7 @@ APP_EXECUTABLE_NAME="AwsCredentialManagerApp"
 HELPER_NAME="aws-credential-manager-helper"
 RESOURCE_BUNDLE_NAME="app-macos_App.bundle"
 ZIP_PATH="$DIST_DIR/aws-credential-manager-macos.zip"
-VERSION="${VERSION:-0.1.2}"
+VERSION="${VERSION:-0.1.3}"
 
 echo "==> Building Go helper"
 "$ROOT_DIR/scripts/build-helper.sh"
@@ -88,6 +88,10 @@ chmod +x "$APP_DIR/Contents/MacOS/$APP_EXECUTABLE_NAME"
 chmod +x "$APP_DIR/Contents/Resources/$HELPER_NAME"
 
 plutil -lint "$APP_DIR/Contents/Info.plist" >/dev/null
+
+echo "==> Applying ad-hoc bundle signature"
+codesign --force --deep --sign - "$APP_DIR"
+codesign --verify --deep --strict "$APP_DIR"
 
 echo "==> Creating zip archive"
 rm -f "$ZIP_PATH"

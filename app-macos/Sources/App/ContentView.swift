@@ -248,8 +248,16 @@ private struct ConfigRowView: View {
             )
             .clipShape(Capsule())
         }
-        Text("Profile: \(config.profileName)")
-          .font(.subheadline)
+        HStack(spacing: 6) {
+          Text("Profile: \(config.profileName)")
+            .font(.subheadline)
+          Button(action: copyProfileName) {
+            Image(systemName: "doc.on.doc")
+              .font(.caption)
+          }
+          .buttonStyle(.borderless)
+          .help("Copy profile name")
+        }
         if isGenerating && config.authType == .sso {
           Text("Waiting for browser sign-in...")
             .font(.caption)
@@ -344,5 +352,11 @@ private struct ConfigRowView: View {
     let hours = minutes / 60
     let remMinutes = minutes % 60
     return "Session expires in \(hours)h \(remMinutes)m"
+  }
+
+  private func copyProfileName() {
+    let pasteboard = NSPasteboard.general
+    pasteboard.clearContents()
+    pasteboard.setString(config.profileName, forType: .string)
   }
 }

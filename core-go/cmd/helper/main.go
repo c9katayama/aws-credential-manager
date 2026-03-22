@@ -23,7 +23,7 @@ import (
 	"github.com/yaman/aws-credential-manager/core-go/internal/settings"
 )
 
-const version = "0.1.3"
+const version = "0.1.4"
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)

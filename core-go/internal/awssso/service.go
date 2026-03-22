@@ -43,6 +43,7 @@ type SessionResult struct {
 	SessionToken    string
 	Expiration      time.Time
 	BrowserURL      string
+	Session         sessioncache.Session
 }
 
 type Service struct {
@@ -84,6 +85,7 @@ func (s *Service) Generate(ctx context.Context, input metadata.ConfigInput) (Ses
 		return SessionResult{}, err
 	}
 	input.SSOIssuerURL = issuerURL
+	s.PrimeFromInput(input)
 
 	cfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(strings.TrimSpace(input.SSORegion)))
 	if err != nil {
@@ -132,7 +134,41 @@ func (s *Service) Generate(ctx context.Context, input metadata.ConfigInput) (Ses
 		SessionToken:    aws.ToString(roleOut.RoleCredentials.SessionToken),
 		Expiration:      expiration,
 		BrowserURL:      browserURL,
+		Session:         session,
 	}, nil
+}
+
+func (s *Service) PrimeFromInput(input metadata.ConfigInput) {
+	if strings.TrimSpace(input.ID) == "" {
+		return
+	}
+
+	session, _ := s.cache.Get(input.ID)
+	if strings.TrimSpace(input.SSOClientID) != "" {
+		session.Registration.ClientID = strings.TrimSpace(input.SSOClientID)
+	}
+	if strings.TrimSpace(input.SSOClientSecret) != "" {
+		session.Registration.ClientSecret = strings.TrimSpace(input.SSOClientSecret)
+	}
+	if expiry, ok := parseSessionTime(input.SSOClientSecretExpiry); ok {
+		session.Registration.ClientSecretExpiresAt = expiry
+	}
+	if strings.TrimSpace(input.SSOAccessToken) != "" {
+		session.AccessToken = strings.TrimSpace(input.SSOAccessToken)
+	}
+	if expiry, ok := parseSessionTime(input.SSOAccessExpiry); ok {
+		session.AccessExpiry = expiry
+	}
+	if strings.TrimSpace(input.SSORefreshToken) != "" {
+		session.RefreshToken = strings.TrimSpace(input.SSORefreshToken)
+	}
+	if strings.TrimSpace(input.SSOLastBrowserURL) != "" {
+		session.LastBrowserURL = strings.TrimSpace(input.SSOLastBrowserURL)
+	}
+	if session.Registration.ClientID == "" && session.AccessToken == "" && session.RefreshToken == "" {
+		return
+	}
+	s.cache.Put(input.ID, session)
 }
 
 func (s *Service) registerClient(ctx context.Context, client *ssooidc.Client, input metadata.ConfigInput) (sessioncache.Registration, error) {
@@ -315,6 +351,18 @@ func normalizeIssuerURL(rawIssuerURL, fallbackStartURL string) (string, error) {
 	}
 
 	return parsed.String(), nil
+}
+
+func parseSessionTime(raw string) (time.Time, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return time.Time{}, false
+	}
+	value, err := time.Parse(time.RFC3339, trimmed)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return value.UTC(), true
 }
 
 func newAuthCodeCallbackServer() (*authCodeCallbackServer, error) {

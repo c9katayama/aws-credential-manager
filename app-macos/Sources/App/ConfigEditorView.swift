@@ -43,6 +43,7 @@ struct ConfigEditorView: View {
           editorActions
         } else if showNewItemWizard {
           newItemWizard
+          editorActions
         } else {
           if showVaultControls {
             regularVaultControls
@@ -255,7 +256,6 @@ struct ConfigEditorView: View {
             summaryRow("Setting Name", value: draft.settingName)
             summaryRow("Profile Name", value: draft.profileName)
             summaryRow("Auth Type", value: draft.authType.displayName)
-            editorActions
           }
         }
       }
@@ -281,10 +281,7 @@ struct ConfigEditorView: View {
           labeledField("Profile Name", text: $draft.profileName)
         }
         if showAutoRefreshField {
-          Toggle("Enable Auto Refresh", isOn: $draft.autoRefreshEnabled)
-        }
-        if showVaultControls && !showImportPicker {
-          vaultPicker
+          autoRefreshPicker
         }
         if !draft.vaultID.isEmpty {
           labeledField("1Password Vault ID", text: $draft.vaultID, editable: false)
@@ -315,7 +312,7 @@ struct ConfigEditorView: View {
 
       labeledField("Setting Name", text: $draft.settingName)
       labeledField("Profile Name", text: $draft.profileName)
-      Toggle("Enable Auto Refresh", isOn: $draft.autoRefreshEnabled)
+      autoRefreshPicker
 
       if draft.authType == .sts {
         stsFields
@@ -403,10 +400,22 @@ struct ConfigEditorView: View {
         onSelectAccount(account)
       }
       if accounts.isEmpty {
-        Text("Configure at least one account in Accounts first.")
+        Text("Configure at least one account in 1Password Accounts first.")
           .font(.caption)
           .foregroundStyle(.secondary)
       }
+    }
+  }
+
+  private var autoRefreshPicker: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      Text("Auto Refresh")
+        .font(.subheadline.weight(.medium))
+      Picker("Auto Refresh", selection: $draft.autoRefreshEnabled) {
+        Text("Off").tag(false)
+        Text("On").tag(true)
+      }
+      .pickerStyle(.segmented)
     }
   }
 

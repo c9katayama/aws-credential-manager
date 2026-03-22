@@ -76,6 +76,8 @@ struct RemoteConfigSummary: Codable, Identifiable, Equatable, Sendable {
   var lastKnownExpiration: Date?
   var lastRefreshTime: Date?
   var lastErrorSummary: String?
+  var ssoRefreshTokenAvailable: Bool?
+  var ssoSessionExpiry: Date?
 }
 
 struct ConfigMutationResult: Decodable, Sendable {

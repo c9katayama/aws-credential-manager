@@ -20,17 +20,19 @@ const CurrentSchemaVersion = 1
 var awsAccessKeyPattern = regexp.MustCompile(`^[A-Z0-9]{16,128}$`)
 
 type ConfigSummary struct {
-	ID                  string     `json:"id"`
-	SettingName         string     `json:"settingName"`
-	AuthType            string     `json:"authType"`
-	OnePasswordAccountName string   `json:"onePasswordAccountName"`
-	ProfileName         string     `json:"profileName"`
-	VaultID             string     `json:"vaultID"`
-	ItemID              string     `json:"itemID"`
-	AutoRefreshEnabled  bool       `json:"autoRefreshEnabled"`
-	LastKnownExpiration *time.Time `json:"lastKnownExpiration,omitempty"`
-	LastRefreshTime     *time.Time `json:"lastRefreshTime,omitempty"`
-	LastErrorSummary    string     `json:"lastErrorSummary,omitempty"`
+	ID                       string     `json:"id"`
+	SettingName              string     `json:"settingName"`
+	AuthType                 string     `json:"authType"`
+	OnePasswordAccountName   string     `json:"onePasswordAccountName"`
+	ProfileName              string     `json:"profileName"`
+	VaultID                  string     `json:"vaultID"`
+	ItemID                   string     `json:"itemID"`
+	AutoRefreshEnabled       bool       `json:"autoRefreshEnabled"`
+	LastKnownExpiration      *time.Time `json:"lastKnownExpiration,omitempty"`
+	LastRefreshTime          *time.Time `json:"lastRefreshTime,omitempty"`
+	LastErrorSummary         string     `json:"lastErrorSummary,omitempty"`
+	SSORefreshTokenAvailable bool       `json:"ssoRefreshTokenAvailable,omitempty"`
+	SSOSessionExpiry         *time.Time `json:"ssoSessionExpiry,omitempty"`
 }
 
 type Index struct {
@@ -39,31 +41,38 @@ type Index struct {
 }
 
 type ConfigInput struct {
-	ID                 string `json:"id,omitempty"`
-	SettingName        string `json:"settingName"`
-	AuthType           string `json:"authType"`
+	ID                     string `json:"id,omitempty"`
+	SettingName            string `json:"settingName"`
+	AuthType               string `json:"authType"`
 	OnePasswordAccountName string `json:"onePasswordAccountName"`
-	ProfileName        string `json:"profileName"`
-	VaultID            string `json:"vaultID"`
-	ItemID             string `json:"itemID"`
-	AutoRefreshEnabled bool   `json:"autoRefreshEnabled"`
-	AWSAccessKeyID     string `json:"awsAccessKeyId,omitempty"`
-	AWSSecretAccessKey string `json:"awsSecretAccessKey,omitempty"`
-	MFAArn             string `json:"mfaArn,omitempty"`
-	MFATOTP            string `json:"mfaTotp,omitempty"`
-	RoleArn            string `json:"roleArn,omitempty"`
-	RoleSessionName    string `json:"roleSessionName,omitempty"`
-	ExternalID         string `json:"externalId,omitempty"`
-	SessionDuration    string `json:"sessionDuration,omitempty"`
-	STSRegion          string `json:"stsRegion,omitempty"`
-	SSOStartURL        string `json:"ssoStartUrl,omitempty"`
-	SSOIssuerURL       string `json:"ssoIssuerUrl,omitempty"`
-	SSORegion          string `json:"ssoRegion,omitempty"`
-	SSOUsername        string `json:"ssoUsername,omitempty"`
-	SSOPassword        string `json:"ssoPassword,omitempty"`
-	SSOMFATOTP         string `json:"ssoMfaTotp,omitempty"`
-	SSOAccountID       string `json:"ssoAccountId,omitempty"`
-	SSORoleName        string `json:"ssoRoleName,omitempty"`
+	ProfileName            string `json:"profileName"`
+	VaultID                string `json:"vaultID"`
+	ItemID                 string `json:"itemID"`
+	AutoRefreshEnabled     bool   `json:"autoRefreshEnabled"`
+	AWSAccessKeyID         string `json:"awsAccessKeyId,omitempty"`
+	AWSSecretAccessKey     string `json:"awsSecretAccessKey,omitempty"`
+	MFAArn                 string `json:"mfaArn,omitempty"`
+	MFATOTP                string `json:"mfaTotp,omitempty"`
+	RoleArn                string `json:"roleArn,omitempty"`
+	RoleSessionName        string `json:"roleSessionName,omitempty"`
+	ExternalID             string `json:"externalId,omitempty"`
+	SessionDuration        string `json:"sessionDuration,omitempty"`
+	STSRegion              string `json:"stsRegion,omitempty"`
+	SSOStartURL            string `json:"ssoStartUrl,omitempty"`
+	SSOIssuerURL           string `json:"ssoIssuerUrl,omitempty"`
+	SSORegion              string `json:"ssoRegion,omitempty"`
+	SSOUsername            string `json:"ssoUsername,omitempty"`
+	SSOPassword            string `json:"ssoPassword,omitempty"`
+	SSOMFATOTP             string `json:"ssoMfaTotp,omitempty"`
+	SSOAccountID           string `json:"ssoAccountId,omitempty"`
+	SSORoleName            string `json:"ssoRoleName,omitempty"`
+	SSOAccessToken         string `json:"ssoAccessToken,omitempty"`
+	SSOAccessExpiry        string `json:"ssoAccessExpiry,omitempty"`
+	SSORefreshToken        string `json:"ssoRefreshToken,omitempty"`
+	SSOClientID            string `json:"ssoClientId,omitempty"`
+	SSOClientSecret        string `json:"ssoClientSecret,omitempty"`
+	SSOClientSecretExpiry  string `json:"ssoClientSecretExpiry,omitempty"`
+	SSOLastBrowserURL      string `json:"ssoLastBrowserUrl,omitempty"`
 }
 
 type Store struct {
@@ -163,16 +172,16 @@ func (s *Store) Create(input ConfigInput) (ConfigSummary, error) {
 	input.ID = ""
 
 	summary := ConfigSummary{
-		ID:                  "",
-		SettingName:         input.SettingName,
-		AuthType:            input.AuthType,
+		ID:                     "",
+		SettingName:            input.SettingName,
+		AuthType:               input.AuthType,
 		OnePasswordAccountName: input.OnePasswordAccountName,
-		ProfileName:         input.ProfileName,
-		VaultID:             input.VaultID,
-		ItemID:              input.ItemID,
-		AutoRefreshEnabled:  input.AutoRefreshEnabled,
-		LastRefreshTime:     nil,
-		LastKnownExpiration: nil,
+		ProfileName:            input.ProfileName,
+		VaultID:                input.VaultID,
+		ItemID:                 input.ItemID,
+		AutoRefreshEnabled:     input.AutoRefreshEnabled,
+		LastRefreshTime:        nil,
+		LastKnownExpiration:    nil,
 	}
 
 	id, err := newID()
@@ -212,17 +221,17 @@ func (s *Store) Update(input ConfigInput) (ConfigSummary, error) {
 		}
 
 		summary := ConfigSummary{
-			ID:                  input.ID,
-			SettingName:         input.SettingName,
-			AuthType:            input.AuthType,
+			ID:                     input.ID,
+			SettingName:            input.SettingName,
+			AuthType:               input.AuthType,
 			OnePasswordAccountName: input.OnePasswordAccountName,
-			ProfileName:         input.ProfileName,
-			VaultID:             input.VaultID,
-			ItemID:              input.ItemID,
-			AutoRefreshEnabled:  input.AutoRefreshEnabled,
-			LastKnownExpiration: existing.LastKnownExpiration,
-			LastRefreshTime:     existing.LastRefreshTime,
-			LastErrorSummary:    existing.LastErrorSummary,
+			ProfileName:            input.ProfileName,
+			VaultID:                input.VaultID,
+			ItemID:                 input.ItemID,
+			AutoRefreshEnabled:     input.AutoRefreshEnabled,
+			LastKnownExpiration:    existing.LastKnownExpiration,
+			LastRefreshTime:        existing.LastRefreshTime,
+			LastErrorSummary:       existing.LastErrorSummary,
 		}
 		index.Configs[i] = summary
 		if err := s.Save(index); err != nil {

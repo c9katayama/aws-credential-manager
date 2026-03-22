@@ -204,7 +204,7 @@ struct ContentView: View {
           isCreateModePickerPresented = true
         }
       }
-      Button("Accounts") {
+      Button("1Password Accounts") {
         viewModel.beginAccountSettings()
       }
       Button("Refresh") {
@@ -258,20 +258,21 @@ private struct ConfigRowView: View {
         Text(remainingText)
           .font(.caption)
           .foregroundStyle(remainingColor)
-        if !config.itemID.isEmpty {
-          Text("Item ID: \(config.itemID)")
+        if config.authType == .sso {
+          Text(refreshTokenText)
             .font(.caption)
             .foregroundStyle(.secondary)
-            .textSelection(.enabled)
+          if let sessionExpiryText {
+            Text(sessionExpiryText)
+              .font(.caption)
+              .foregroundStyle(.secondary)
+          }
         }
       }
 
       Spacer()
 
       VStack(alignment: .trailing, spacing: 8) {
-        Toggle("Auto", isOn: .constant(config.autoRefreshEnabled))
-          .labelsHidden()
-          .disabled(true)
         HStack {
           if isGenerating {
             Button("Cancel", role: .destructive, action: onCancelGenerate)
@@ -321,5 +322,27 @@ private struct ConfigRowView: View {
       return "Generate"
     }
     return config.authType == .sso ? "Waiting..." : "Generating..."
+  }
+
+  private var refreshTokenText: String {
+    let isAvailable = config.ssoRefreshTokenAvailable ?? false
+    return "Refresh token: \(isAvailable ? "Loaded" : "Missing")"
+  }
+
+  private var sessionExpiryText: String? {
+    guard let expiry = config.ssoSessionExpiry else {
+      return nil
+    }
+    let remaining = expiry.timeIntervalSinceNow
+    if remaining <= 0 {
+      return "Session expired"
+    }
+    let minutes = Int(remaining / 60)
+    if minutes < 60 {
+      return "Session expires in \(minutes)m"
+    }
+    let hours = minutes / 60
+    let remMinutes = minutes % 60
+    return "Session expires in \(hours)h \(remMinutes)m"
   }
 }

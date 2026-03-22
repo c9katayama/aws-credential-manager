@@ -14,13 +14,14 @@ import (
 	onepassword "github.com/1password/onepassword-sdk-go"
 
 	"github.com/yaman/aws-credential-manager/core-go/internal/metadata"
+	"github.com/yaman/aws-credential-manager/core-go/internal/sessioncache"
 	"github.com/yaman/aws-credential-manager/core-go/internal/settings"
 )
 
 const (
 	accountEnvVar   = "AWS_CREDENTIAL_MANAGER_1PASSWORD_ACCOUNT"
 	integrationName = "aws-credential-manager"
-	integrationVer  = "0.1.0"
+	integrationVer  = "0.1.2"
 	managedTag      = "aws-credential-manager"
 	schemaVersion   = "1"
 
@@ -262,6 +263,27 @@ func (m *Manager) LoadConfigByItem(ctx context.Context, accountName, vaultID, it
 		}
 		return input, nil
 	})
+}
+
+func (m *Manager) PersistSSOSessionState(ctx context.Context, summary metadata.ConfigSummary, session sessioncache.Session) error {
+	accountName, err := m.resolveAccountName(summary.OnePasswordAccountName)
+	if err != nil {
+		return err
+	}
+	if summary.VaultID == "" || summary.ItemID == "" {
+		return errors.New("config is missing 1Password linkage")
+	}
+
+	_, err = withClientRetry(ctx, m, accountName, func(client *onepassword.Client) (struct{}, error) {
+		item, err := client.Items().Get(ctx, summary.VaultID, summary.ItemID)
+		if err != nil {
+			return struct{}{}, err
+		}
+		item.Fields = mergeSelectedManagedFields(item.Fields, buildSSOSessionStateFields(session), managedSSOSessionFieldIDs())
+		_, err = client.Items().Put(ctx, item)
+		return struct{}{}, err
+	})
+	return err
 }
 
 func (m *Manager) ListVaults(ctx context.Context, accountName string) ([]VaultOption, error) {
@@ -606,10 +628,48 @@ func buildManagedFields(input metadata.ConfigInput) []onepassword.ItemField {
 			newField(ssoSectionID, "sso_account_id", "AWS Account ID", onepassword.ItemFieldTypeText, input.SSOAccountID),
 			newField(ssoSectionID, "sso_role_name", "AWS Role Name", onepassword.ItemFieldTypeText, input.SSORoleName),
 			newField(ssoSectionID, "session_duration", "Session Duration Minutes", onepassword.ItemFieldTypeText, input.SessionDuration),
+			newField(ssoSectionID, "sso_access_token", "SSO Access Token", onepassword.ItemFieldTypeConcealed, input.SSOAccessToken),
+			newField(ssoSectionID, "sso_access_expiry", "SSO Access Expiry", onepassword.ItemFieldTypeText, input.SSOAccessExpiry),
+			newField(ssoSectionID, "sso_refresh_token", "SSO Refresh Token", onepassword.ItemFieldTypeConcealed, input.SSORefreshToken),
+			newField(ssoSectionID, "sso_client_id", "SSO Client ID", onepassword.ItemFieldTypeText, input.SSOClientID),
+			newField(ssoSectionID, "sso_client_secret", "SSO Client Secret", onepassword.ItemFieldTypeConcealed, input.SSOClientSecret),
+			newField(ssoSectionID, "sso_client_secret_expiry", "SSO Client Secret Expiry", onepassword.ItemFieldTypeText, input.SSOClientSecretExpiry),
+			newField(ssoSectionID, "sso_last_browser_url", "SSO Last Browser URL", onepassword.ItemFieldTypeURL, input.SSOLastBrowserURL),
 		)
 	}
 
 	return pruneEmptyFields(fields)
+}
+
+func buildSSOSessionStateFields(session sessioncache.Session) []onepassword.ItemField {
+	return pruneEmptyFields([]onepassword.ItemField{
+		newField(ssoSectionID, "sso_access_token", "SSO Access Token", onepassword.ItemFieldTypeConcealed, session.AccessToken),
+		newField(ssoSectionID, "sso_access_expiry", "SSO Access Expiry", onepassword.ItemFieldTypeText, formatSessionTime(session.AccessExpiry)),
+		newField(ssoSectionID, "sso_refresh_token", "SSO Refresh Token", onepassword.ItemFieldTypeConcealed, session.RefreshToken),
+		newField(ssoSectionID, "sso_client_id", "SSO Client ID", onepassword.ItemFieldTypeText, session.Registration.ClientID),
+		newField(ssoSectionID, "sso_client_secret", "SSO Client Secret", onepassword.ItemFieldTypeConcealed, session.Registration.ClientSecret),
+		newField(ssoSectionID, "sso_client_secret_expiry", "SSO Client Secret Expiry", onepassword.ItemFieldTypeText, formatSessionTime(session.Registration.ClientSecretExpiresAt)),
+		newField(ssoSectionID, "sso_last_browser_url", "SSO Last Browser URL", onepassword.ItemFieldTypeURL, session.LastBrowserURL),
+	})
+}
+
+func managedSSOSessionFieldIDs() map[string]bool {
+	return map[string]bool{
+		"sso_access_token":         true,
+		"sso_access_expiry":        true,
+		"sso_refresh_token":        true,
+		"sso_client_id":            true,
+		"sso_client_secret":        true,
+		"sso_client_secret_expiry": true,
+		"sso_last_browser_url":     true,
+	}
+}
+
+func formatSessionTime(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339)
 }
 
 func decodeConfigInput(item onepassword.Item, id string) metadata.ConfigInput {
@@ -666,6 +726,20 @@ func decodeConfigInput(item onepassword.Item, id string) metadata.ConfigInput {
 			input.SSOAccountID = value
 		case "sso_role_name":
 			input.SSORoleName = value
+		case "sso_access_token":
+			input.SSOAccessToken = value
+		case "sso_access_expiry":
+			input.SSOAccessExpiry = value
+		case "sso_refresh_token":
+			input.SSORefreshToken = value
+		case "sso_client_id":
+			input.SSOClientID = value
+		case "sso_client_secret":
+			input.SSOClientSecret = value
+		case "sso_client_secret_expiry":
+			input.SSOClientSecretExpiry = value
+		case "sso_last_browser_url":
+			input.SSOLastBrowserURL = value
 		}
 	}
 
@@ -764,6 +838,34 @@ func applyImportFallbacks(item onepassword.Item, input *metadata.ConfigInput) {
 			if strings.TrimSpace(input.SSORoleName) == "" {
 				input.SSORoleName = value
 			}
+		case "sso_access_token":
+			if strings.TrimSpace(input.SSOAccessToken) == "" {
+				input.SSOAccessToken = value
+			}
+		case "sso_access_expiry":
+			if strings.TrimSpace(input.SSOAccessExpiry) == "" {
+				input.SSOAccessExpiry = value
+			}
+		case "sso_refresh_token":
+			if strings.TrimSpace(input.SSORefreshToken) == "" {
+				input.SSORefreshToken = value
+			}
+		case "sso_client_id":
+			if strings.TrimSpace(input.SSOClientID) == "" {
+				input.SSOClientID = value
+			}
+		case "sso_client_secret":
+			if strings.TrimSpace(input.SSOClientSecret) == "" {
+				input.SSOClientSecret = value
+			}
+		case "sso_client_secret_expiry":
+			if strings.TrimSpace(input.SSOClientSecretExpiry) == "" {
+				input.SSOClientSecretExpiry = value
+			}
+		case "sso_last_browser_url":
+			if strings.TrimSpace(input.SSOLastBrowserURL) == "" {
+				input.SSOLastBrowserURL = value
+			}
 		}
 	}
 
@@ -839,7 +941,7 @@ func resolveField(ctx context.Context, client *onepassword.Client, vaultID, item
 
 func isManagedSecretField(id string) bool {
 	switch id {
-	case "aws_access_key_id", "aws_secret_access_key", "mfa_totp", "external_id", "sso_password", "sso_mfa_totp":
+	case "aws_access_key_id", "aws_secret_access_key", "mfa_totp", "external_id", "sso_password", "sso_mfa_totp", "sso_access_token", "sso_refresh_token", "sso_client_secret":
 		return true
 	default:
 		return false
@@ -860,6 +962,20 @@ func assignFieldValue(input *metadata.ConfigInput, fieldID, value string) {
 		input.SSOPassword = value
 	case "sso_mfa_totp":
 		input.SSOMFATOTP = value
+	case "sso_access_token":
+		input.SSOAccessToken = value
+	case "sso_access_expiry":
+		input.SSOAccessExpiry = value
+	case "sso_refresh_token":
+		input.SSORefreshToken = value
+	case "sso_client_id":
+		input.SSOClientID = value
+	case "sso_client_secret":
+		input.SSOClientSecret = value
+	case "sso_client_secret_expiry":
+		input.SSOClientSecretExpiry = value
+	case "sso_last_browser_url":
+		input.SSOLastBrowserURL = value
 	}
 }
 
@@ -877,6 +993,20 @@ func hasFieldValue(input metadata.ConfigInput, fieldID string) bool {
 		return strings.TrimSpace(input.SSOPassword) != ""
 	case "sso_mfa_totp":
 		return strings.TrimSpace(input.SSOMFATOTP) != ""
+	case "sso_access_token":
+		return strings.TrimSpace(input.SSOAccessToken) != ""
+	case "sso_access_expiry":
+		return strings.TrimSpace(input.SSOAccessExpiry) != ""
+	case "sso_refresh_token":
+		return strings.TrimSpace(input.SSORefreshToken) != ""
+	case "sso_client_id":
+		return strings.TrimSpace(input.SSOClientID) != ""
+	case "sso_client_secret":
+		return strings.TrimSpace(input.SSOClientSecret) != ""
+	case "sso_client_secret_expiry":
+		return strings.TrimSpace(input.SSOClientSecretExpiry) != ""
+	case "sso_last_browser_url":
+		return strings.TrimSpace(input.SSOLastBrowserURL) != ""
 	default:
 		return false
 	}
@@ -921,7 +1051,7 @@ func mergeManagedFields(existing []onepassword.ItemField, replacement []onepassw
 			if next, ok := replacementByID[canonicalID]; ok {
 				merged = append(merged, next)
 				used[canonicalID] = true
-			} else if activeSections[*field.SectionID] && isManagedSecretField(canonicalID) {
+			} else if activeSections[*field.SectionID] && shouldPreserveManagedField(canonicalID) {
 				merged = append(merged, field)
 				used[canonicalID] = true
 			}
@@ -939,6 +1069,44 @@ func mergeManagedFields(existing []onepassword.ItemField, replacement []onepassw
 		used[canonicalID] = true
 	}
 	return merged
+}
+
+func mergeSelectedManagedFields(existing []onepassword.ItemField, replacement []onepassword.ItemField, selectedIDs map[string]bool) []onepassword.ItemField {
+	replacementByID := make(map[string]onepassword.ItemField, len(replacement))
+	for _, field := range replacement {
+		replacementByID[canonicalManagedFieldID(field)] = field
+	}
+
+	merged := make([]onepassword.ItemField, 0, len(existing)+len(replacement))
+	used := map[string]bool{}
+	for _, field := range existing {
+		canonicalID := canonicalManagedFieldID(field)
+		if selectedIDs[canonicalID] {
+			if next, ok := replacementByID[canonicalID]; ok {
+				merged = append(merged, next)
+				used[canonicalID] = true
+			}
+			continue
+		}
+		merged = append(merged, field)
+	}
+
+	for _, field := range replacement {
+		canonicalID := canonicalManagedFieldID(field)
+		if !selectedIDs[canonicalID] || used[canonicalID] {
+			continue
+		}
+		merged = append(merged, field)
+		used[canonicalID] = true
+	}
+	return merged
+}
+
+func shouldPreserveManagedField(id string) bool {
+	if isManagedSecretField(id) {
+		return true
+	}
+	return managedSSOSessionFieldIDs()[id]
 }
 
 func mergeManagedSections(existing []onepassword.ItemSection, replacement []onepassword.ItemSection) []onepassword.ItemSection {

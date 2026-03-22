@@ -23,7 +23,7 @@ import (
 	"github.com/yaman/aws-credential-manager/core-go/internal/settings"
 )
 
-const version = "0.1.0"
+const version = "0.1.2"
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
@@ -57,17 +57,19 @@ func serve() error {
 	if err != nil {
 		return err
 	}
+	ssoService := awssso.New(sessioncache.New())
 	generatorService := generator.New(
 		opManager,
 		store,
 		credentialsStore,
 		awssts.New(),
-		awssso.New(sessioncache.New()),
+		ssoService,
 	)
 	router := service.NewRouter(version, store, settingsStore, opManager, generatorService)
 	backgroundCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go scheduler.New(store, generatorService, 60*time.Second).Start(backgroundCtx)
+	go preloadSSOSessions(backgroundCtx, store, opManager, ssoService)
 
 	scanner := bufio.NewScanner(os.Stdin)
 	writer := bufio.NewWriter(os.Stdout)
@@ -102,6 +104,28 @@ func serve() error {
 
 	wg.Wait()
 	return scanner.Err()
+}
+
+func preloadSSOSessions(ctx context.Context, store *metadata.Store, opManager *onepasswordmanager.Manager, ssoService *awssso.Service) {
+	preloadCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+
+	index, err := store.Load()
+	if err != nil {
+		log.Printf("preload SSO sessions: metadata load failed: %v", err)
+		return
+	}
+	for _, summary := range index.Configs {
+		if summary.AuthType != "sso" {
+			continue
+		}
+		input, err := opManager.LoadConfigItem(preloadCtx, summary)
+		if err != nil {
+			log.Printf("preload SSO sessions: config %s load failed: %v", summary.ID, err)
+			continue
+		}
+		ssoService.PrimeFromInput(input)
+	}
 }
 
 func writeResponse(writer *bufio.Writer, response ipc.Response) error {

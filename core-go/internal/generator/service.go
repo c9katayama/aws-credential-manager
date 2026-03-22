@@ -11,6 +11,7 @@ import (
 	"github.com/yaman/aws-credential-manager/core-go/internal/credentialsfile"
 	"github.com/yaman/aws-credential-manager/core-go/internal/metadata"
 	onepasswordmanager "github.com/yaman/aws-credential-manager/core-go/internal/onepassword"
+	"github.com/yaman/aws-credential-manager/core-go/internal/sessioncache"
 )
 
 type Result struct {
@@ -39,23 +40,33 @@ type ssoGenerator interface {
 	Generate(ctx context.Context, input metadata.ConfigInput) (awssso.SessionResult, error)
 }
 
+type ssoSessionPersister interface {
+	PersistSSOSessionState(ctx context.Context, summary metadata.ConfigSummary, session sessioncache.Session) error
+}
+
 type Service struct {
 	opManager        configLoader
 	metadataStore    *metadata.Store
 	credentialsStore credentialsWriter
 	stsService       stsGenerator
 	ssoService       ssoGenerator
+	ssoPersister     ssoSessionPersister
 	mu               sync.Mutex
 	inFlight         map[string]bool
 }
 
 func New(opManager *onepasswordmanager.Manager, metadataStore *metadata.Store, credentialsStore *credentialsfile.Store, stsService *awssts.Service, ssoService *awssso.Service) *Service {
+	var persister ssoSessionPersister
+	if opManager != nil {
+		persister = opManager
+	}
 	return &Service{
 		opManager:        opManager,
 		metadataStore:    metadataStore,
 		credentialsStore: credentialsStore,
 		stsService:       stsService,
 		ssoService:       ssoService,
+		ssoPersister:     persister,
 		inFlight:         map[string]bool{},
 	}
 }
@@ -100,6 +111,12 @@ func (s *Service) Generate(ctx context.Context, id string) (Result, error) {
 		token = res.SessionToken
 		expiration = res.Expiration
 		browserURL = res.BrowserURL
+		if s.ssoPersister != nil {
+			if err := s.ssoPersister.PersistSSOSessionState(ctx, summary, res.Session); err != nil {
+				s.recordError(id, err)
+				return Result{}, err
+			}
+		}
 	default:
 		err := fmt.Errorf("unsupported auth type: %s", input.AuthType)
 		s.recordError(id, err)

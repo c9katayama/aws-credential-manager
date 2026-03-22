@@ -28,8 +28,8 @@ type generateParams struct {
 
 type onePasswordItemsParams struct {
 	AccountName string `json:"accountName,omitempty"`
-	VaultID string `json:"vaultId"`
-	ItemID  string `json:"itemId,omitempty"`
+	VaultID     string `json:"vaultId"`
+	ItemID      string `json:"itemId,omitempty"`
 }
 
 type onePasswordAccountParams struct {
@@ -74,9 +74,10 @@ func (r *Router) Handle(req ipc.Request) ipc.Response {
 		if err != nil {
 			return ipc.Failure(req.ID, "metadata_error", err.Error())
 		}
+		configs := r.enrichConfigSummaries(index.Configs)
 		return ipc.Success(req.ID, map[string]any{
 			"schemaVersion": index.SchemaVersion,
-			"configs":       index.Configs,
+			"configs":       configs,
 			"path":          r.store.Path(),
 		})
 	case "configs.sync":
@@ -289,9 +290,33 @@ func (r *Router) handleSync(req ipc.Request) ipc.Response {
 	}
 	return ipc.Success(req.ID, map[string]any{
 		"schemaVersion": index.SchemaVersion,
-		"configs":       index.Configs,
+		"configs":       r.enrichConfigSummaries(index.Configs),
 		"path":          r.store.Path(),
 	})
+}
+
+func (r *Router) enrichConfigSummaries(configs []metadata.ConfigSummary) []metadata.ConfigSummary {
+	enriched := make([]metadata.ConfigSummary, len(configs))
+	copy(enriched, configs)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	for i := range enriched {
+		if enriched[i].AuthType != "sso" {
+			continue
+		}
+		input, err := r.opManager.LoadConfigItem(ctx, enriched[i])
+		if err != nil {
+			continue
+		}
+		enriched[i].SSORefreshTokenAvailable = input.SSORefreshToken != ""
+		if expiry, err := time.Parse(time.RFC3339, input.SSOAccessExpiry); err == nil {
+			expiry = expiry.UTC()
+			enriched[i].SSOSessionExpiry = &expiry
+		}
+	}
+	return enriched
 }
 
 func (r *Router) handleSettingsGet(req ipc.Request) ipc.Response {

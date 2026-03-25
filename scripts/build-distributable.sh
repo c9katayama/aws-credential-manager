@@ -19,7 +19,7 @@ echo "==> Building app icon"
 ICON_PATH="$("$ROOT_DIR/scripts/build-app-icon.sh")"
 
 echo "==> Building macOS app (release)"
-swift build --package-path "$APP_PACKAGE_DIR" --configuration release
+swift build --disable-sandbox --package-path "$APP_PACKAGE_DIR" --configuration release
 
 APP_EXECUTABLE_PATH="$(find "$APP_PACKAGE_DIR/.build" -path "*/release/$APP_EXECUTABLE_NAME" | head -n 1)"
 RESOURCE_BUNDLE_PATH="$(find "$APP_PACKAGE_DIR/.build" -path "*/release/$RESOURCE_BUNDLE_NAME" | head -n 1)"

@@ -104,10 +104,11 @@ func (s *Service) Generate(ctx context.Context, input metadata.ConfigInput) (Ses
 		session.Registration = registration
 	}
 
-	accessToken, refreshToken, browserURL, accessExpiry, err := s.ensureAccessToken(ctx, oidcClient, input, session)
+	accessToken, refreshToken, browserURL, accessExpiry, registration, err := s.ensureAccessToken(ctx, oidcClient, input, session)
 	if err != nil {
 		return SessionResult{}, err
 	}
+	session.Registration = registration
 
 	roleOut, err := ssoClient.GetRoleCredentials(ctx, &sso.GetRoleCredentialsInput{
 		AccessToken: aws.String(accessToken),
@@ -190,9 +191,9 @@ func (s *Service) registerClient(ctx context.Context, client *ssooidc.Client, in
 	}, nil
 }
 
-func (s *Service) ensureAccessToken(ctx context.Context, client *ssooidc.Client, input metadata.ConfigInput, session sessioncache.Session) (string, string, string, time.Time, error) {
+func (s *Service) ensureAccessToken(ctx context.Context, client *ssooidc.Client, input metadata.ConfigInput, session sessioncache.Session) (string, string, string, time.Time, sessioncache.Registration, error) {
 	if session.AccessToken != "" && time.Now().Add(1*time.Minute).Before(session.AccessExpiry) {
-		return session.AccessToken, session.RefreshToken, session.LastBrowserURL, session.AccessExpiry, nil
+		return session.AccessToken, session.RefreshToken, session.LastBrowserURL, session.AccessExpiry, session.Registration, nil
 	}
 
 	if session.RefreshToken != "" {
@@ -208,11 +209,81 @@ func (s *Service) ensureAccessToken(ctx context.Context, client *ssooidc.Client,
 				refreshToken = *out.RefreshToken
 			}
 			expiry := time.Now().Add(time.Duration(out.ExpiresIn) * time.Second)
-			return aws.ToString(out.AccessToken), refreshToken, session.LastBrowserURL, expiry, nil
+			return aws.ToString(out.AccessToken), refreshToken, session.LastBrowserURL, expiry, session.Registration, nil
+		}
+		if isInvalidClientError(err) {
+			session.Registration = sessioncache.Registration{}
 		}
 	}
 
-	return s.authorizationCodeFlow(ctx, client, input, session.Registration)
+	registration, err := s.registerClient(ctx, client, input)
+	if err != nil {
+		return "", "", "", time.Time{}, sessioncache.Registration{}, err
+	}
+
+	accessToken, refreshToken, browserURL, accessExpiry, err := s.deviceAuthorizationFlow(ctx, client, input, registration)
+	if err != nil {
+		return "", "", browserURL, time.Time{}, registration, err
+	}
+	return accessToken, refreshToken, browserURL, accessExpiry, registration, nil
+}
+
+func (s *Service) deviceAuthorizationFlow(ctx context.Context, client *ssooidc.Client, input metadata.ConfigInput, registration sessioncache.Registration) (string, string, string, time.Time, error) {
+	startOut, err := client.StartDeviceAuthorization(ctx, &ssooidc.StartDeviceAuthorizationInput{
+		ClientId:     aws.String(registration.ClientID),
+		ClientSecret: aws.String(registration.ClientSecret),
+		StartUrl:     aws.String(strings.TrimSpace(input.SSOStartURL)),
+	})
+	if err != nil {
+		return "", "", "", time.Time{}, fmt.Errorf("SSO device authorization start failed: %w", err)
+	}
+
+	browserURL := strings.TrimSpace(aws.ToString(startOut.VerificationUriComplete))
+	if browserURL == "" {
+		browserURL = strings.TrimSpace(aws.ToString(startOut.VerificationUri))
+	}
+	if browserURL == "" {
+		return "", "", "", time.Time{}, fmt.Errorf("SSO device authorization did not return a browser URL")
+	}
+	if err := exec.Command("open", browserURL).Run(); err != nil {
+		return "", "", browserURL, time.Time{}, fmt.Errorf("failed to open browser for SSO login: %w", err)
+	}
+
+	interval := 5 * time.Second
+	if startOut.Interval > 0 {
+		interval = time.Duration(startOut.Interval) * time.Second
+	}
+
+	for {
+		tokenOut, err := client.CreateToken(ctx, &ssooidc.CreateTokenInput{
+			ClientId:     aws.String(registration.ClientID),
+			ClientSecret: aws.String(registration.ClientSecret),
+			GrantType:    aws.String(deviceGrantType),
+			DeviceCode:   startOut.DeviceCode,
+		})
+		if err == nil {
+			expiry := time.Now().Add(time.Duration(tokenOut.ExpiresIn) * time.Second)
+			return aws.ToString(tokenOut.AccessToken), aws.ToString(tokenOut.RefreshToken), browserURL, expiry, nil
+		}
+
+		switch apiErrorCode(err) {
+		case "AuthorizationPendingException":
+			if err := waitForNextDevicePoll(ctx, interval); err != nil {
+				return "", "", browserURL, time.Time{}, err
+			}
+			continue
+		case "SlowDownException":
+			interval += 5 * time.Second
+			if err := waitForNextDevicePoll(ctx, interval); err != nil {
+				return "", "", browserURL, time.Time{}, err
+			}
+			continue
+		case "ExpiredTokenException":
+			return "", "", browserURL, time.Time{}, fmt.Errorf("SSO browser login expired before completion")
+		default:
+			return "", "", browserURL, time.Time{}, fmt.Errorf("SSO device token exchange failed: %w", err)
+		}
+	}
 }
 
 func (s *Service) authorizationCodeFlow(ctx context.Context, client *ssooidc.Client, input metadata.ConfigInput, registration sessioncache.Registration) (string, string, string, time.Time, error) {
@@ -299,6 +370,33 @@ func explainRegisterClientError(err error, issuerURL, region string) error {
 		strings.TrimSpace(region),
 		err,
 	)
+}
+
+func isInvalidClientError(err error) bool {
+	return strings.EqualFold(apiErrorCode(err), "InvalidClientException")
+}
+
+func apiErrorCode(err error) string {
+	var apiErr smithy.APIError
+	if !errors.As(err, &apiErr) {
+		return ""
+	}
+	return apiErr.ErrorCode()
+}
+
+func waitForNextDevicePoll(ctx context.Context, interval time.Duration) error {
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return fmt.Errorf("SSO browser login cancelled")
+		}
+		return fmt.Errorf("SSO browser login timed out")
+	case <-timer.C:
+		return nil
+	}
 }
 
 func normalizeStartURL(raw string) (string, error) {

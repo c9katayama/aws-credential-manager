@@ -63,26 +63,25 @@ struct ContentView: View {
     .sheet(isPresented: $viewModel.isEditorPresented) {
       ConfigEditorView(
         draft: $viewModel.editorDraft,
-        accounts: viewModel.editorAccounts,
         isImportCreateFlow: viewModel.isImportCreateFlow,
         isSaving: viewModel.isLoading,
         errorMessage: viewModel.editorError,
         onePasswordStatus: viewModel.onePasswordStatus,
+        onePasswordStatusDetail: viewModel.onePasswordStatusDetail,
+        onePasswordActionTitle: viewModel.onePasswordActionTitle,
+        onePasswordStatusColor: viewModel.onePasswordStatusColor,
         needsReconnect: viewModel.needsOnePasswordReconnect,
         isAuthorized: viewModel.isOnePasswordAuthorized,
         vaults: viewModel.availableVaults,
         items: viewModel.availableItems,
         isLoadingOptions: viewModel.isLoadingEditorOptions,
-        onSelectAccount: { accountName in
-          viewModel.selectEditorAccount(accountName)
-        },
         onConnectOnePassword: {
           NSApp.activate(ignoringOtherApps: true)
           NSWorkspace.shared.launchApplication("1Password")
           Task {
             if await viewModel.connectOnePassword(
               forceReconnect: true,
-              accountName: viewModel.editorDraft.onePasswordAccountName
+              accountName: viewModel.selectedOnePasswordAccountName
             ) {
               if !viewModel.editorDraft.vaultID.isEmpty {
                 await viewModel.loadItemsForSelectedVault(viewModel.editorDraft.vaultID)
@@ -187,11 +186,40 @@ struct ContentView: View {
 
   private var header: some View {
     VStack(alignment: .leading, spacing: 6) {
-      Text(viewModel.helperStatus)
-        .font(.subheadline)
-      Text("1Password: \(viewModel.onePasswordStatus)")
-        .font(.caption)
-        .foregroundStyle(.secondary)
+      HStack(alignment: .top) {
+        Text(viewModel.helperStatus)
+          .font(.subheadline)
+        Spacer()
+        Button("Refresh") {
+          Task {
+            await viewModel.refresh()
+          }
+        }
+        .disabled(viewModel.isLoading)
+      }
+      HStack(alignment: .top, spacing: 10) {
+        VStack(alignment: .leading, spacing: 3) {
+          Text("1Password: \(viewModel.onePasswordStatus)")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(viewModel.onePasswordStatusColor)
+          if let detail = viewModel.onePasswordStatusDetail, !detail.isEmpty {
+            Text(detail)
+              .font(.caption2)
+              .foregroundStyle(.secondary)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+        }
+        Spacer()
+        if viewModel.shouldShowOnePasswordAction {
+          Button(viewModel.onePasswordActionTitle) {
+            NSApp.activate(ignoringOtherApps: true)
+            NSWorkspace.shared.launchApplication("1Password")
+            Task {
+              await viewModel.reconnectConfiguredOnePassword()
+            }
+          }
+        }
+      }
     }
   }
 
@@ -207,12 +235,6 @@ struct ContentView: View {
       Button("1Password Accounts") {
         viewModel.beginAccountSettings()
       }
-      Button("Refresh") {
-        Task {
-          await viewModel.refresh()
-        }
-      }
-      .disabled(viewModel.isLoading)
       Button("Quit", action: onQuit)
 
       Spacer()

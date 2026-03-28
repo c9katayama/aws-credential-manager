@@ -359,6 +359,26 @@ func (s *Store) RecordResult(id string, expiration *time.Time, errSummary string
 	return ConfigSummary{}, fmt.Errorf("config not found: %s", id)
 }
 
+func (s *Store) ClearErrorSummaries() error {
+	index, err := s.Load()
+	if err != nil {
+		return err
+	}
+
+	changed := false
+	for i := range index.Configs {
+		if index.Configs[i].LastErrorSummary == "" {
+			continue
+		}
+		index.Configs[i].LastErrorSummary = ""
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	return s.Save(index)
+}
+
 func validateInput(input ConfigInput) error {
 	if input.SettingName == "" {
 		return errors.New("settingName is required")

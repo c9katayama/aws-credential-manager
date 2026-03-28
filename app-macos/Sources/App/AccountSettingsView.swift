@@ -13,7 +13,7 @@ struct AccountSettingsView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
-      Text("1Password Accounts")
+      Text("1Password Account")
         .font(.title3.bold())
 
       if let errorMessage, !errorMessage.isEmpty {
@@ -23,63 +23,37 @@ struct AccountSettingsView: View {
       }
 
       VStack(alignment: .leading, spacing: 8) {
-        Text("Saved Accounts")
+        Text("Configured Account")
           .font(.headline)
 
         if accounts.isEmpty {
-          Text("No accounts saved yet.")
+          Text("No account saved yet.")
             .font(.footnote)
             .foregroundStyle(.secondary)
         } else {
-          ScrollView {
-            LazyVStack(alignment: .leading, spacing: 8) {
-              ForEach(accounts, id: \.self) { account in
-                HStack(spacing: 10) {
-                  Image(systemName: selectedAccount == account ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(selectedAccount == account ? Color.accentColor : Color.secondary)
-                  Text(account)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                  Button("Remove", role: .destructive) {
-                    onRemoveAccount(account)
-                  }
-                  .buttonStyle(.borderless)
-                }
-                .contentShape(Rectangle())
-                .onTapGesture {
-                  selectedAccount = account
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-                .background(
-                  RoundedRectangle(cornerRadius: 8)
-                    .fill(
-                      selectedAccount == account
-                        ? Color.accentColor.opacity(0.15)
-                        : Color.secondary.opacity(0.08)
-                    )
-                )
+          if let account = accounts.first {
+            HStack(spacing: 10) {
+              Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(Color.accentColor)
+              Text(account)
+                .frame(maxWidth: .infinity, alignment: .leading)
+              Button("Remove", role: .destructive) {
+                onRemoveAccount(account)
               }
+              .buttonStyle(.borderless)
             }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(
+              RoundedRectangle(cornerRadius: 8)
+                .fill(Color.accentColor.opacity(0.15))
+            )
           }
-          .frame(minHeight: 120, maxHeight: 200)
         }
       }
 
       VStack(alignment: .leading, spacing: 8) {
-        Text("Default Account")
-          .font(.headline)
-        Picker("Default Account", selection: $selectedAccount) {
-          Text("Select Account").tag("")
-          ForEach(accounts, id: \.self) { account in
-            Text(account).tag(account)
-          }
-        }
-        .pickerStyle(.menu)
-        .disabled(accounts.isEmpty)
-      }
-
-      VStack(alignment: .leading, spacing: 8) {
-        Text("Add Account")
+        Text(accounts.isEmpty ? "Add Account" : "Replace Account")
           .font(.headline)
         HStack {
           TextField("1Password account name", text: $newAccountName)
@@ -88,6 +62,9 @@ struct AccountSettingsView: View {
           Button("Add", action: onAddAccount)
             .disabled(newAccountName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
+        Text("Only one 1Password account can be configured at a time.")
+          .font(.caption)
+          .foregroundStyle(.secondary)
       }
 
       HStack {

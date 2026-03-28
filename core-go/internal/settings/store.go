@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 const CurrentSchemaVersion = 1
@@ -101,7 +102,7 @@ func normalize(settings AppSettings) AppSettings {
 	seen := map[string]bool{}
 	accounts := make([]string, 0, len(settings.OnePasswordAccounts))
 	for _, account := range settings.OnePasswordAccounts {
-		trimmed := account
+		trimmed := strings.TrimSpace(account)
 		if trimmed == "" || seen[trimmed] {
 			continue
 		}
@@ -109,6 +110,7 @@ func normalize(settings AppSettings) AppSettings {
 		accounts = append(accounts, trimmed)
 	}
 	settings.OnePasswordAccounts = accounts
+	settings.SelectedOnePasswordAccountName = strings.TrimSpace(settings.SelectedOnePasswordAccountName)
 
 	if settings.SelectedOnePasswordAccountName == "" && len(settings.OnePasswordAccounts) > 0 {
 		settings.SelectedOnePasswordAccountName = settings.OnePasswordAccounts[0]
@@ -119,6 +121,11 @@ func normalize(settings AppSettings) AppSettings {
 		} else {
 			settings.SelectedOnePasswordAccountName = ""
 		}
+	}
+	if settings.SelectedOnePasswordAccountName != "" {
+		settings.OnePasswordAccounts = []string{settings.SelectedOnePasswordAccountName}
+	} else {
+		settings.OnePasswordAccounts = nil
 	}
 
 	settings.OnePasswordAccountName = ""

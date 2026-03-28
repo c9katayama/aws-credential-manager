@@ -124,3 +124,47 @@ func TestSyncManagedSummariesPreservesRuntimeState(t *testing.T) {
 		t.Fatalf("expected synced fields to replace local summary, got %+v", index.Configs[0])
 	}
 }
+
+func TestClearErrorSummariesPreservesOtherRuntimeState(t *testing.T) {
+	store := newTestStore(t)
+
+	created, err := store.Create(ConfigInput{
+		SettingName:            "demo",
+		AuthType:               "sts",
+		OnePasswordAccountName: "soracom",
+		ProfileName:            "demo",
+		VaultID:                "vault",
+		ItemID:                 "item",
+		AutoRefreshEnabled:     true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expiration := time.Now().UTC().Add(10 * time.Minute)
+	recorded, err := store.RecordResult(created.ID, &expiration, "boom")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recorded.LastErrorSummary == "" {
+		t.Fatal("expected test fixture to contain an error summary")
+	}
+
+	if err := store.ClearErrorSummaries(); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.LastErrorSummary != "" {
+		t.Fatalf("expected error summary to be cleared, got %q", reloaded.LastErrorSummary)
+	}
+	if reloaded.LastKnownExpiration == nil || !reloaded.LastKnownExpiration.Equal(expiration) {
+		t.Fatalf("expected expiration to be preserved, got %+v", reloaded.LastKnownExpiration)
+	}
+	if reloaded.LastRefreshTime == nil {
+		t.Fatal("expected last refresh time to be preserved")
+	}
+}

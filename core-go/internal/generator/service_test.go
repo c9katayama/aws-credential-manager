@@ -15,11 +15,17 @@ import (
 )
 
 type fakeLoader struct {
-	input metadata.ConfigInput
-	err   error
+	input       metadata.ConfigInput
+	err         error
+	ctxDeadline time.Time
+	hasDeadline bool
 }
 
-func (f fakeLoader) LoadRuntimeConfig(ctx context.Context, summary metadata.ConfigSummary) (metadata.ConfigInput, error) {
+func (f *fakeLoader) LoadRuntimeConfig(ctx context.Context, summary metadata.ConfigSummary) (metadata.ConfigInput, error) {
+	if deadline, ok := ctx.Deadline(); ok {
+		f.ctxDeadline = deadline
+		f.hasDeadline = true
+	}
 	return f.input, f.err
 }
 
@@ -54,13 +60,19 @@ func (f fakeSSO) Generate(ctx context.Context, input metadata.ConfigInput) (awss
 }
 
 type fakeSSOPersister struct {
-	summary metadata.ConfigSummary
-	session sessioncache.Session
-	called  bool
-	err     error
+	summary     metadata.ConfigSummary
+	session     sessioncache.Session
+	called      bool
+	err         error
+	ctxDeadline time.Time
+	hasDeadline bool
 }
 
 func (f *fakeSSOPersister) PersistSSOSessionState(ctx context.Context, summary metadata.ConfigSummary, session sessioncache.Session) error {
+	if deadline, ok := ctx.Deadline(); ok {
+		f.ctxDeadline = deadline
+		f.hasDeadline = true
+	}
 	f.summary = summary
 	f.session = session
 	f.called = true
@@ -84,7 +96,7 @@ func TestGenerateSTSRecordsSuccess(t *testing.T) {
 	expiration := time.Now().UTC().Add(1 * time.Hour)
 	writer := &fakeWriter{}
 	service := &Service{
-		opManager:        fakeLoader{input: metadata.ConfigInput{ID: created.ID, AuthType: "sts"}},
+		opManager:        &fakeLoader{input: metadata.ConfigInput{ID: created.ID, AuthType: "sts"}},
 		metadataStore:    store,
 		credentialsStore: writer,
 		stsService: fakeSTS{result: awssts.SessionResult{
@@ -123,7 +135,7 @@ func TestGenerateRecordsFailure(t *testing.T) {
 	}
 
 	service := &Service{
-		opManager:        fakeLoader{input: metadata.ConfigInput{ID: created.ID, AuthType: "sts"}},
+		opManager:        &fakeLoader{input: metadata.ConfigInput{ID: created.ID, AuthType: "sts"}},
 		metadataStore:    store,
 		credentialsStore: &fakeWriter{},
 		stsService:       fakeSTS{err: errors.New("boom")},
@@ -159,7 +171,7 @@ func TestGenerateSSOPersistsSessionState(t *testing.T) {
 	expiration := time.Now().UTC().Add(1 * time.Hour)
 	persister := &fakeSSOPersister{}
 	service := &Service{
-		opManager:        fakeLoader{input: metadata.ConfigInput{ID: created.ID, AuthType: "sso"}},
+		opManager:        &fakeLoader{input: metadata.ConfigInput{ID: created.ID, AuthType: "sso"}},
 		metadataStore:    store,
 		credentialsStore: &fakeWriter{},
 		stsService:       fakeSTS{},
@@ -187,5 +199,88 @@ func TestGenerateSSOPersistsSessionState(t *testing.T) {
 	}
 	if persister.session.RefreshToken != "refresh" {
 		t.Fatalf("unexpected session passed to persister: %+v", persister.session)
+	}
+}
+
+func TestGenerateUsesBoundedOnePasswordTimeoutForLoad(t *testing.T) {
+	store := metadata.NewStoreAt(filepath.Join(t.TempDir(), "index.json"))
+	created, err := store.Create(metadata.ConfigInput{
+		SettingName:            "demo-sso",
+		AuthType:               "sso",
+		OnePasswordAccountName: "account",
+		ProfileName:            "demo",
+		VaultID:                "vault",
+		ItemID:                 "item",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	loader := &fakeLoader{input: metadata.ConfigInput{ID: created.ID, AuthType: "sso"}}
+	service := &Service{
+		opManager:        loader,
+		metadataStore:    store,
+		credentialsStore: &fakeWriter{},
+		stsService:       fakeSTS{},
+		ssoService: fakeSSO{result: awssso.SessionResult{
+			AccessKeyID:     "akid",
+			SecretAccessKey: "secret",
+			SessionToken:    "token",
+			Expiration:      time.Now().UTC().Add(1 * time.Hour),
+		}},
+	}
+
+	start := time.Now()
+	if _, err := service.Generate(context.Background(), created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if !loader.hasDeadline {
+		t.Fatal("expected loader context to have a deadline")
+	}
+	remaining := loader.ctxDeadline.Sub(start)
+	if remaining <= 0 || remaining > 16*time.Second {
+		t.Fatalf("expected bounded onepassword timeout, got remaining=%s", remaining)
+	}
+}
+
+func TestGenerateUsesBoundedOnePasswordTimeoutForPersist(t *testing.T) {
+	store := metadata.NewStoreAt(filepath.Join(t.TempDir(), "index.json"))
+	created, err := store.Create(metadata.ConfigInput{
+		SettingName:            "demo-sso",
+		AuthType:               "sso",
+		OnePasswordAccountName: "account",
+		ProfileName:            "demo",
+		VaultID:                "vault",
+		ItemID:                 "item",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	persister := &fakeSSOPersister{}
+	service := &Service{
+		opManager:        &fakeLoader{input: metadata.ConfigInput{ID: created.ID, AuthType: "sso"}},
+		metadataStore:    store,
+		credentialsStore: &fakeWriter{},
+		stsService:       fakeSTS{},
+		ssoService: fakeSSO{result: awssso.SessionResult{
+			AccessKeyID:     "akid",
+			SecretAccessKey: "secret",
+			SessionToken:    "token",
+			Expiration:      time.Now().UTC().Add(1 * time.Hour),
+		}},
+		ssoPersister: persister,
+	}
+
+	start := time.Now()
+	if _, err := service.Generate(context.Background(), created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if !persister.hasDeadline {
+		t.Fatal("expected persister context to have a deadline")
+	}
+	remaining := persister.ctxDeadline.Sub(start)
+	if remaining <= 0 || remaining > 16*time.Second {
+		t.Fatalf("expected bounded onepassword timeout, got remaining=%s", remaining)
 	}
 }

@@ -111,6 +111,19 @@ final class HelperClient: @unchecked Sendable {
     }
   }
 
+  func restart() throws {
+    stop()
+    bufferQueue.sync {
+      buffer.removeAll(keepingCapacity: false)
+      let pending = waiters
+      waiters.removeAll()
+      for (_, callback) in pending {
+        callback(.failure(HelperError.startupFailed("Helper restarted while request was in flight.")))
+      }
+    }
+    try start()
+  }
+
   func healthCheck(timeout: TimeInterval = 5.0) throws -> HelperHealth {
     try send(method: "health.check", params: Optional<EmptyParams>.none, timeout: timeout)
   }
@@ -121,6 +134,10 @@ final class HelperClient: @unchecked Sendable {
 
   func syncConfigs(timeout: TimeInterval = 60.0) throws -> HelperListResponse {
     try send(method: "configs.sync", params: Optional<EmptyParams>.none, timeout: timeout)
+  }
+
+  func clearConfigErrorSummaries(timeout: TimeInterval = 5.0) throws {
+    let _: EmptyResult = try send(method: "configs.errors.clear", params: Optional<EmptyParams>.none, timeout: timeout)
   }
 
   func onePasswordStatus(accountName: String, timeout: TimeInterval = 60.0) throws -> OnePasswordStatusResponse {

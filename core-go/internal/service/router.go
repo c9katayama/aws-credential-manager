@@ -94,6 +94,8 @@ func (r *Router) Handle(req ipc.Request) ipc.Response {
 		return r.handleGenerate(req)
 	case "configs.generate.cancel":
 		return r.handleGenerateCancel(req)
+	case "configs.errors.clear":
+		return r.handleConfigErrorsClear(req)
 	case "settings.get":
 		return r.handleSettingsGet(req)
 	case "settings.update":
@@ -147,7 +149,7 @@ func (r *Router) handleGet(req ipc.Request) ipc.Response {
 		return ipc.Failure(req.ID, "config_get_failed", err.Error())
 	}
 
-	ctx, cancel := onepasswordmanager.WithTimeout(context.Background())
+	ctx, cancel := onepasswordmanager.WithInteractiveTimeout(context.Background())
 	defer cancel()
 	input, err := r.opManager.LoadConfigItem(ctx, summary)
 	if err != nil {
@@ -165,7 +167,7 @@ func (r *Router) handleCreate(req ipc.Request) ipc.Response {
 	}
 	input.ID = ""
 
-	ctx, cancel := onepasswordmanager.WithTimeout(context.Background())
+	ctx, cancel := onepasswordmanager.WithInteractiveTimeout(context.Background())
 	defer cancel()
 	inputWithItem, err := r.opManager.UpsertConfigItem(ctx, input)
 	if err != nil {
@@ -190,7 +192,7 @@ func (r *Router) handleUpdate(req ipc.Request) ipc.Response {
 		return ipc.Failure(req.ID, "invalid_params", "id is required")
 	}
 
-	ctx, cancel := onepasswordmanager.WithTimeout(context.Background())
+	ctx, cancel := onepasswordmanager.WithInteractiveTimeout(context.Background())
 	defer cancel()
 	inputWithItem, err := r.opManager.UpsertConfigItem(ctx, input)
 	if err != nil {
@@ -217,6 +219,13 @@ func (r *Router) handleDelete(req ipc.Request) ipc.Response {
 	return ipc.Success(req.ID, map[string]any{
 		"deletedID": params.ID,
 	})
+}
+
+func (r *Router) handleConfigErrorsClear(req ipc.Request) ipc.Response {
+	if err := r.store.ClearErrorSummaries(); err != nil {
+		return ipc.Failure(req.ID, "config_errors_clear_failed", err.Error())
+	}
+	return ipc.Success(req.ID, map[string]any{})
 }
 
 func (r *Router) handleGenerate(req ipc.Request) ipc.Response {
@@ -298,11 +307,15 @@ func (r *Router) handleSync(req ipc.Request) ipc.Response {
 func (r *Router) enrichConfigSummaries(configs []metadata.ConfigSummary) []metadata.ConfigSummary {
 	enriched := make([]metadata.ConfigSummary, len(configs))
 	copy(enriched, configs)
+	selectedAccount := r.selectedOnePasswordAccountName()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	for i := range enriched {
+		if selectedAccount != "" {
+			enriched[i].OnePasswordAccountName = selectedAccount
+		}
 		if enriched[i].AuthType != "sso" {
 			continue
 		}
@@ -317,6 +330,17 @@ func (r *Router) enrichConfigSummaries(configs []metadata.ConfigSummary) []metad
 		}
 	}
 	return enriched
+}
+
+func (r *Router) selectedOnePasswordAccountName() string {
+	if r.settingsStore == nil {
+		return ""
+	}
+	settingsValue, err := r.settingsStore.Load()
+	if err != nil {
+		return ""
+	}
+	return settingsValue.SelectedOnePasswordAccountName
 }
 
 func (r *Router) handleSettingsGet(req ipc.Request) ipc.Response {
@@ -348,7 +372,7 @@ func (r *Router) handleSettingsUpdate(req ipc.Request) ipc.Response {
 func (r *Router) handleOnePasswordStatus(req ipc.Request) ipc.Response {
 	var params onePasswordAccountParams
 	_ = json.Unmarshal(req.Params, &params)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := onepasswordmanager.WithInteractiveTimeout(context.Background())
 	defer cancel()
 	status := r.opManager.Status(ctx, params.AccountName)
 	return ipc.Success(req.ID, map[string]any{
@@ -359,7 +383,7 @@ func (r *Router) handleOnePasswordStatus(req ipc.Request) ipc.Response {
 func (r *Router) handleOnePasswordReconnect(req ipc.Request) ipc.Response {
 	var params onePasswordAccountParams
 	_ = json.Unmarshal(req.Params, &params)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := onepasswordmanager.WithInteractiveTimeout(context.Background())
 	defer cancel()
 	status := r.opManager.Reconnect(ctx, params.AccountName)
 	return ipc.Success(req.ID, map[string]any{
@@ -370,7 +394,7 @@ func (r *Router) handleOnePasswordReconnect(req ipc.Request) ipc.Response {
 func (r *Router) handleOnePasswordVaultsList(req ipc.Request) ipc.Response {
 	var params onePasswordAccountParams
 	_ = json.Unmarshal(req.Params, &params)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := onepasswordmanager.WithInteractiveTimeout(context.Background())
 	defer cancel()
 	vaults, err := r.opManager.ListVaults(ctx, params.AccountName)
 	if err != nil {
@@ -387,7 +411,7 @@ func (r *Router) handleOnePasswordItemsList(req ipc.Request) ipc.Response {
 	if params.VaultID == "" {
 		return ipc.Failure(req.ID, "invalid_params", "vaultId is required")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := onepasswordmanager.WithInteractiveTimeout(context.Background())
 	defer cancel()
 	items, err := r.opManager.ListManagedItems(ctx, params.AccountName, params.VaultID)
 	if err != nil {
@@ -404,7 +428,7 @@ func (r *Router) handleOnePasswordItemGetConfig(req ipc.Request) ipc.Response {
 	if params.VaultID == "" || params.ItemID == "" {
 		return ipc.Failure(req.ID, "invalid_params", "vaultId and itemId are required")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := onepasswordmanager.WithInteractiveTimeout(context.Background())
 	defer cancel()
 	input, err := r.opManager.LoadConfigByItem(ctx, params.AccountName, params.VaultID, params.ItemID)
 	if err != nil {

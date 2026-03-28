@@ -202,6 +202,11 @@ struct AppSettings: Codable, Equatable, Sendable {
     if !selectedOnePasswordAccountName.isEmpty && !onePasswordAccounts.contains(selectedOnePasswordAccountName) {
       selectedOnePasswordAccountName = onePasswordAccounts.first ?? ""
     }
+    if !selectedOnePasswordAccountName.isEmpty {
+      onePasswordAccounts = [selectedOnePasswordAccountName]
+    } else {
+      onePasswordAccounts = []
+    }
     onePasswordAccountName = ""
     onePasswordAccountConfigured = false
   }

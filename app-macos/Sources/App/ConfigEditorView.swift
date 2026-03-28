@@ -2,17 +2,18 @@ import SwiftUI
 
 struct ConfigEditorView: View {
   @Binding var draft: ConfigDraft
-  let accounts: [String]
   let isImportCreateFlow: Bool
   let isSaving: Bool
   let errorMessage: String?
   let onePasswordStatus: String
+  let onePasswordStatusDetail: String?
+  let onePasswordActionTitle: String
+  let onePasswordStatusColor: Color
   let needsReconnect: Bool
   let isAuthorized: Bool
   let vaults: [OnePasswordVaultOption]
   let items: [OnePasswordItemOption]
   let isLoadingOptions: Bool
-  let onSelectAccount: (String) -> Void
   let onConnectOnePassword: () -> Void
   let onLoadVaults: () -> Void
   let onLoadItems: () -> Void
@@ -121,11 +122,9 @@ struct ConfigEditorView: View {
     VStack(alignment: .leading, spacing: 12) {
       accountPicker
       HStack(spacing: 10) {
-        Text("1Password: \(onePasswordStatus)")
-          .font(.footnote)
-          .foregroundStyle(.secondary)
+        statusSummary
         Spacer()
-        Button(needsReconnect ? "Reconnect 1Password" : "Connect 1Password", action: onConnectOnePassword)
+        Button(onePasswordActionTitle, action: onConnectOnePassword)
           .disabled(isSaving || isLoadingOptions || draft.onePasswordAccountName.isEmpty)
         Button("Load Vaults", action: onLoadVaults)
           .disabled(isSaving || isLoadingOptions || draft.onePasswordAccountName.isEmpty)
@@ -146,11 +145,9 @@ struct ConfigEditorView: View {
         VStack(alignment: .leading, spacing: 12) {
           accountPicker
           HStack(spacing: 10) {
-            Text("1Password: \(onePasswordStatus)")
-              .font(.footnote)
-              .foregroundStyle(.secondary)
+            statusSummary
             Spacer()
-            Button(needsReconnect ? "Reconnect 1Password" : "Connect 1Password", action: onConnectOnePassword)
+            Button(onePasswordActionTitle, action: onConnectOnePassword)
               .disabled(isSaving || isLoadingOptions || draft.onePasswordAccountName.isEmpty)
           }
         }
@@ -225,11 +222,9 @@ struct ConfigEditorView: View {
         VStack(alignment: .leading, spacing: 12) {
           accountPicker
           HStack(spacing: 10) {
-            Text("1Password: \(onePasswordStatus)")
-              .font(.footnote)
-              .foregroundStyle(.secondary)
+            statusSummary
             Spacer()
-            Button(needsReconnect ? "Reconnect 1Password" : "Connect 1Password", action: onConnectOnePassword)
+            Button(onePasswordActionTitle, action: onConnectOnePassword)
               .disabled(isSaving || isLoadingOptions || draft.onePasswordAccountName.isEmpty)
           }
           if hasAuthorizedAccount {
@@ -370,6 +365,20 @@ struct ConfigEditorView: View {
     hasSelectedAccount && isAuthorized
   }
 
+  private var statusSummary: some View {
+    VStack(alignment: .leading, spacing: 2) {
+      Text("1Password: \(onePasswordStatus)")
+        .font(.footnote.weight(.semibold))
+        .foregroundStyle(onePasswordStatusColor)
+      if let onePasswordStatusDetail, !onePasswordStatusDetail.isEmpty {
+        Text(onePasswordStatusDetail)
+          .font(.caption2)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+    }
+  }
+
   private var hasSelectedVault: Bool {
     !draft.vaultID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
@@ -389,21 +398,17 @@ struct ConfigEditorView: View {
     VStack(alignment: .leading, spacing: 6) {
       Text("1Password Account")
         .font(.subheadline.weight(.medium))
-      Picker("1Password Account", selection: $draft.onePasswordAccountName) {
-        Text("Select Account").tag("")
-        ForEach(accounts, id: \.self) { account in
-          Text(account).tag(account)
-        }
-      }
-      .pickerStyle(.menu)
-      .onChange(of: draft.onePasswordAccountName) { account in
-        onSelectAccount(account)
-      }
-      if accounts.isEmpty {
-        Text("Configure at least one account in 1Password Accounts first.")
-          .font(.caption)
-          .foregroundStyle(.secondary)
-      }
+      Text(draft.onePasswordAccountName.isEmpty ? "No account selected" : draft.onePasswordAccountName)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(
+          RoundedRectangle(cornerRadius: 8)
+            .fill(Color.secondary.opacity(0.08))
+        )
+      Text("The configured account in Settings is used for all items.")
+        .font(.caption)
+        .foregroundStyle(.secondary)
     }
   }
 

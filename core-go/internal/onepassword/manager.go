@@ -19,11 +19,15 @@ import (
 )
 
 const (
-	accountEnvVar   = "AWS_CREDENTIAL_MANAGER_1PASSWORD_ACCOUNT"
-	integrationName = "aws-credential-manager"
-	integrationVer  = "0.1.4"
-	managedTag      = "aws-credential-manager"
-	schemaVersion   = "1"
+	accountEnvVar      = "AWS_CREDENTIAL_MANAGER_1PASSWORD_ACCOUNT"
+	integrationName    = "aws-credential-manager"
+	integrationVer     = "0.1.4"
+	managedTag         = "aws-credential-manager"
+	schemaVersion      = "1"
+	clientRetryMax     = 3
+	clientMaxIdle      = 45 * time.Second
+	requestTimeout     = 15 * time.Second
+	interactiveTimeout = 3 * time.Minute
 
 	commonSectionID = "aws-credential-manager"
 	stsSectionID    = "sts-config"
@@ -46,11 +50,17 @@ type Status struct {
 }
 
 type Manager struct {
-	mu            sync.Mutex
-	sdkMu         sync.Mutex
-	client        *onepassword.Client
-	account       string
-	settingsStore *settings.Store
+	mu              sync.Mutex
+	sdkGate         chan struct{}
+	sdkGateOnce     sync.Once
+	client          *onepassword.Client
+	account         string
+	lastClientUse   time.Time
+	settingsStore   *settings.Store
+	clientFactory   func(ctx context.Context, accountName string) (*onepassword.Client, error)
+	connectionProbe func(ctx context.Context, client *onepassword.Client) error
+	vaultLister     func(ctx context.Context, client *onepassword.Client) ([]onepassword.VaultOverview, error)
+	fieldResolver   func(ctx context.Context, client *onepassword.Client, vaultID, itemID, sectionID, fieldID, attribute string) (string, error)
 }
 
 type runtimeConfigLoader interface {
@@ -102,17 +112,7 @@ func (m *Manager) Status(ctx context.Context, explicitAccountName string) Status
 		}
 	}
 
-	client, err := m.clientForAccount(ctx, accountName)
-	if err != nil {
-		return Status{
-			Configured:  true,
-			Connected:   false,
-			AccountName: accountName,
-			Message:     err.Error(),
-		}
-	}
-
-	if _, err := m.privateVault(ctx, client); err != nil {
+	if err := m.ensureConnected(ctx, accountName); err != nil {
 		return Status{
 			Configured:  true,
 			Connected:   false,
@@ -134,6 +134,7 @@ func (m *Manager) UpsertConfigItem(ctx context.Context, input metadata.ConfigInp
 	if err != nil {
 		return input, err
 	}
+	input.OnePasswordAccountName = accountName
 
 	return withClientRetry(ctx, m, accountName, func(client *onepassword.Client) (metadata.ConfigInput, error) {
 		vaultID := strings.TrimSpace(input.VaultID)
@@ -205,9 +206,7 @@ func (m *Manager) LoadConfigItem(ctx context.Context, summary metadata.ConfigSum
 		}
 
 		input := decodeConfigInput(item, summary.ID)
-		if strings.TrimSpace(input.OnePasswordAccountName) == "" {
-			input.OnePasswordAccountName = accountName
-		}
+		input.OnePasswordAccountName = accountName
 		if err := m.resolveStoredSecrets(ctx, client, item, &input); err != nil {
 			return metadata.ConfigInput{}, err
 		}
@@ -231,9 +230,7 @@ func (m *Manager) LoadRuntimeConfig(ctx context.Context, summary metadata.Config
 		}
 
 		input := decodeConfigInput(item, summary.ID)
-		if strings.TrimSpace(input.OnePasswordAccountName) == "" {
-			input.OnePasswordAccountName = accountName
-		}
+		input.OnePasswordAccountName = accountName
 		if err := m.resolveStoredSecrets(ctx, client, item, &input); err != nil {
 			return metadata.ConfigInput{}, err
 		}
@@ -255,9 +252,7 @@ func (m *Manager) LoadConfigByItem(ctx context.Context, accountName, vaultID, it
 			return metadata.ConfigInput{}, err
 		}
 		input := decodeConfigInput(item, "")
-		if strings.TrimSpace(input.OnePasswordAccountName) == "" {
-			input.OnePasswordAccountName = accountName
-		}
+		input.OnePasswordAccountName = accountName
 		if err := m.resolveStoredSecrets(ctx, client, item, &input); err != nil {
 			return metadata.ConfigInput{}, err
 		}
@@ -292,7 +287,7 @@ func (m *Manager) ListVaults(ctx context.Context, accountName string) ([]VaultOp
 		return nil, err
 	}
 	return withClientRetry(ctx, m, accountName, func(client *onepassword.Client) ([]VaultOption, error) {
-		vaults, err := client.Vaults().List(ctx)
+		vaults, err := m.listVaultOverviews(ctx, client)
 		if err != nil {
 			return nil, err
 		}
@@ -379,12 +374,13 @@ func (m *Manager) ListManagedConfigSummaries(ctx context.Context) ([]metadata.Co
 					continue
 				}
 				summaries = append(summaries, metadata.ConfigSummary{
-					SettingName:        input.SettingName,
-					AuthType:           input.AuthType,
-					ProfileName:        input.ProfileName,
-					VaultID:            fullItem.VaultID,
-					ItemID:             fullItem.ID,
-					AutoRefreshEnabled: input.AutoRefreshEnabled,
+					SettingName:            input.SettingName,
+					AuthType:               input.AuthType,
+					OnePasswordAccountName: accountName,
+					ProfileName:            input.ProfileName,
+					VaultID:                fullItem.VaultID,
+					ItemID:                 fullItem.ID,
+					AutoRefreshEnabled:     input.AutoRefreshEnabled,
 				})
 			}
 		}
@@ -393,9 +389,6 @@ func (m *Manager) ListManagedConfigSummaries(ctx context.Context) ([]metadata.Co
 }
 
 func (m *Manager) resolveAccountName(explicitAccountName string) (string, error) {
-	if strings.TrimSpace(explicitAccountName) != "" {
-		return strings.TrimSpace(explicitAccountName), nil
-	}
 	if m.settingsStore != nil {
 		settingsValue, err := m.settingsStore.Load()
 		if err != nil {
@@ -404,6 +397,9 @@ func (m *Manager) resolveAccountName(explicitAccountName string) (string, error)
 		if strings.TrimSpace(settingsValue.SelectedOnePasswordAccountName) != "" {
 			return strings.TrimSpace(settingsValue.SelectedOnePasswordAccountName), nil
 		}
+	}
+	if strings.TrimSpace(explicitAccountName) != "" {
+		return strings.TrimSpace(explicitAccountName), nil
 	}
 
 	accountName := strings.TrimSpace(os.Getenv(accountEnvVar))
@@ -414,37 +410,44 @@ func (m *Manager) resolveAccountName(explicitAccountName string) (string, error)
 }
 
 func (m *Manager) clientForAccount(ctx context.Context, accountName string) (*onepassword.Client, error) {
+	now := time.Now()
+
 	m.mu.Lock()
 	if m.client != nil && m.account == accountName {
-		client := m.client
-		m.mu.Unlock()
-		return client, nil
+		if !m.lastClientUse.IsZero() && now.Sub(m.lastClientUse) > clientMaxIdle {
+			m.client = nil
+			m.account = ""
+			m.lastClientUse = time.Time{}
+		} else {
+			client := m.client
+			m.lastClientUse = now
+			m.mu.Unlock()
+			return client, nil
+		}
 	}
 	m.mu.Unlock()
 
-	client, err := m.newClient(ctx, accountName)
+	client, err := m.newClientWithRetry(ctx, accountName)
 	if err != nil {
-		if !shouldRetryClientError(err) {
-			return nil, err
-		}
-		time.Sleep(200 * time.Millisecond)
-		client, err = m.newClient(ctx, accountName)
-		if err != nil {
-			return nil, err
-		}
+		return nil, err
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.client != nil && m.account == accountName {
+		m.lastClientUse = now
 		return m.client, nil
 	}
 	m.client = client
 	m.account = accountName
+	m.lastClientUse = now
 	return client, nil
 }
 
 func (m *Manager) newClient(ctx context.Context, accountName string) (*onepassword.Client, error) {
+	if m.clientFactory != nil {
+		return m.clientFactory(ctx, accountName)
+	}
 	return onepassword.NewClient(ctx,
 		onepassword.WithDesktopAppIntegration(accountName),
 		onepassword.WithIntegrationInfo(integrationName, integrationVer),
@@ -457,6 +460,7 @@ func (m *Manager) resetClient(accountName string) {
 	if m.account == accountName {
 		m.client = nil
 		m.account = ""
+		m.lastClientUse = time.Time{}
 	}
 }
 
@@ -465,12 +469,32 @@ func shouldRetryClientError(err error) bool {
 		return false
 	}
 	message := strings.ToLower(err.Error())
+	retryableInitError := strings.Contains(message, "error initializing client:") &&
+		(strings.Contains(message, "return code: -2") ||
+			strings.Contains(message, "return code: -3") ||
+			strings.Contains(message, "return code: -7"))
 	switch {
+	case retryableInitError:
+		return true
 	case strings.Contains(message, "desktop app connection channel is closed"):
 		return true
 	case strings.Contains(message, "connection channel is closed"):
 		return true
+	case strings.Contains(message, "connection was unexpectedly dropped by the desktop app"):
+		return true
+	case strings.Contains(message, "desktop application not found"):
+		return true
 	case strings.Contains(message, "context deadline exceeded"):
+		return true
+	case strings.Contains(message, "request timed out"):
+		return true
+	case strings.Contains(message, "timed out"):
+		return true
+	case strings.Contains(message, "broken pipe"):
+		return true
+	case strings.Contains(message, "connection reset by peer"):
+		return true
+	case strings.Contains(message, "eof"):
 		return true
 	default:
 		return false
@@ -479,31 +503,55 @@ func shouldRetryClientError(err error) bool {
 
 func withClientRetry[T any](ctx context.Context, m *Manager, accountName string, operation func(*onepassword.Client) (T, error)) (T, error) {
 	var zero T
+	var lastErr error
 
-	client, err := m.clientForAccount(ctx, accountName)
-	if err != nil {
-		return zero, err
+	for attempt := 0; attempt < clientRetryMax; attempt++ {
+		client, err := m.clientForAccount(ctx, accountName)
+		if err != nil {
+			return zero, err
+		}
+
+		result, err := withSDKClient(ctx, m, client, operation)
+		if err == nil || !shouldRetryClientError(err) || attempt == clientRetryMax-1 {
+			return result, err
+		}
+
+		lastErr = err
+		m.resetClient(accountName)
+		if err := waitForRetry(ctx, attempt); err != nil {
+			return zero, err
+		}
 	}
 
-	m.sdkMu.Lock()
-	result, err := operation(client)
-	m.sdkMu.Unlock()
-	if !shouldRetryClientError(err) {
-		return result, err
-	}
+	return zero, lastErr
+}
 
-	m.resetClient(accountName)
-	client, clientErr := m.clientForAccount(ctx, accountName)
-	if clientErr != nil {
-		return zero, clientErr
+func withSDKClient[T any](ctx context.Context, m *Manager, client *onepassword.Client, operation func(*onepassword.Client) (T, error)) (T, error) {
+	var zero T
+
+	gate := m.sdkLockChannel()
+	select {
+	case <-ctx.Done():
+		return zero, ctx.Err()
+	case <-gate:
 	}
-	m.sdkMu.Lock()
-	defer m.sdkMu.Unlock()
+	defer func() {
+		gate <- struct{}{}
+	}()
+
 	return operation(client)
 }
 
+func (m *Manager) sdkLockChannel() chan struct{} {
+	m.sdkGateOnce.Do(func() {
+		m.sdkGate = make(chan struct{}, 1)
+		m.sdkGate <- struct{}{}
+	})
+	return m.sdkGate
+}
+
 func (m *Manager) privateVault(ctx context.Context, client *onepassword.Client) (onepassword.VaultOverview, error) {
-	vaults, err := client.Vaults().List(ctx)
+	vaults, err := m.listVaultOverviews(ctx, client)
 	if err != nil {
 		return onepassword.VaultOverview{}, err
 	}
@@ -532,6 +580,59 @@ func (m *Manager) privateVault(ctx context.Context, client *onepassword.Client) 
 		preferredBuiltInVaultTitles,
 		availableTitles,
 	)
+}
+
+func (m *Manager) ensureConnected(ctx context.Context, accountName string) error {
+	_, err := withClientRetry(ctx, m, accountName, func(client *onepassword.Client) (struct{}, error) {
+		return struct{}{}, m.probeConnection(ctx, client)
+	})
+	return err
+}
+
+func (m *Manager) probeConnection(ctx context.Context, client *onepassword.Client) error {
+	if m.connectionProbe != nil {
+		return m.connectionProbe(ctx, client)
+	}
+	_, err := m.listVaultOverviews(ctx, client)
+	return err
+}
+
+func (m *Manager) listVaultOverviews(ctx context.Context, client *onepassword.Client) ([]onepassword.VaultOverview, error) {
+	if m.vaultLister != nil {
+		return m.vaultLister(ctx, client)
+	}
+	return client.Vaults().List(ctx)
+}
+
+func (m *Manager) newClientWithRetry(ctx context.Context, accountName string) (*onepassword.Client, error) {
+	var lastErr error
+	for attempt := 0; attempt < clientRetryMax; attempt++ {
+		client, err := m.newClient(ctx, accountName)
+		if err == nil {
+			return client, nil
+		}
+		if !shouldRetryClientError(err) || attempt == clientRetryMax-1 {
+			return nil, err
+		}
+		lastErr = err
+		if err := waitForRetry(ctx, attempt); err != nil {
+			return nil, err
+		}
+	}
+	return nil, lastErr
+}
+
+func waitForRetry(ctx context.Context, attempt int) error {
+	delay := time.Duration(attempt+1) * 200 * time.Millisecond
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (m *Manager) findExistingItem(ctx context.Context, client *onepassword.Client, vaultID, itemID, title string) (onepassword.Item, bool, error) {
@@ -898,9 +999,9 @@ func (m *Manager) resolveStoredSecrets(ctx context.Context, client *onepassword.
 		if field.SectionID == nil {
 			continue
 		}
-		value, err := resolveField(ctx, client, item.VaultID, item.ID, *field.SectionID, field.ID, "value")
+		value, err := m.resolveFieldValue(ctx, client, item.VaultID, item.ID, *field.SectionID, field.ID, "value")
 		if err != nil {
-			continue
+			return err
 		}
 		assignFieldValue(input, canonicalID, value)
 	}
@@ -924,7 +1025,7 @@ func (m *Manager) resolveRuntimeSecrets(ctx context.Context, client *onepassword
 			if field.FieldType == onepassword.ItemFieldTypeTOTP {
 				attribute = "totp"
 			}
-			value, err := resolveField(ctx, client, item.VaultID, item.ID, *field.SectionID, field.ID, attribute)
+			value, err := m.resolveFieldValue(ctx, client, item.VaultID, item.ID, *field.SectionID, field.ID, attribute)
 			if err != nil {
 				return err
 			}
@@ -937,6 +1038,13 @@ func (m *Manager) resolveRuntimeSecrets(ctx context.Context, client *onepassword
 func resolveField(ctx context.Context, client *onepassword.Client, vaultID, itemID, sectionID, fieldID, attribute string) (string, error) {
 	ref := fmt.Sprintf("op://%s/%s/%s/%s?attribute=%s", vaultID, itemID, sectionID, fieldID, attribute)
 	return client.Secrets().Resolve(ctx, ref)
+}
+
+func (m *Manager) resolveFieldValue(ctx context.Context, client *onepassword.Client, vaultID, itemID, sectionID, fieldID, attribute string) (string, error) {
+	if m.fieldResolver != nil {
+		return m.fieldResolver(ctx, client, vaultID, itemID, sectionID, fieldID, attribute)
+	}
+	return resolveField(ctx, client, vaultID, itemID, sectionID, fieldID, attribute)
 }
 
 func isManagedSecretField(id string) bool {
@@ -1271,5 +1379,9 @@ func ensureTags(existing []string, additions []string) []string {
 }
 
 func WithTimeout(parent context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(parent, 15*time.Second)
+	return context.WithTimeout(parent, requestTimeout)
+}
+
+func WithInteractiveTimeout(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(parent, interactiveTimeout)
 }

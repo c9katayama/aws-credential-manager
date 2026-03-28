@@ -82,8 +82,11 @@ func (s *Service) Generate(ctx context.Context, id string) (Result, error) {
 		return Result{}, err
 	}
 
-	input, err := s.opManager.LoadRuntimeConfig(ctx, summary)
+	loadCtx, cancelLoad := onepasswordmanager.WithTimeout(ctx)
+	input, err := s.opManager.LoadRuntimeConfig(loadCtx, summary)
+	cancelLoad()
 	if err != nil {
+		s.recordError(id, err)
 		return Result{}, err
 	}
 
@@ -112,7 +115,10 @@ func (s *Service) Generate(ctx context.Context, id string) (Result, error) {
 		expiration = res.Expiration
 		browserURL = res.BrowserURL
 		if s.ssoPersister != nil {
-			if err := s.ssoPersister.PersistSSOSessionState(ctx, summary, res.Session); err != nil {
+			persistCtx, cancelPersist := onepasswordmanager.WithTimeout(ctx)
+			err := s.ssoPersister.PersistSSOSessionState(persistCtx, summary, res.Session)
+			cancelPersist()
+			if err != nil {
 				s.recordError(id, err)
 				return Result{}, err
 			}

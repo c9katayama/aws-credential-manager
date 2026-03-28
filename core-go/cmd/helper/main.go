@@ -48,6 +48,9 @@ func serve() error {
 	if err != nil {
 		return err
 	}
+	if err := store.ClearErrorSummaries(); err != nil {
+		return err
+	}
 	settingsStore, err := settings.NewStore()
 	if err != nil {
 		return err
@@ -107,8 +110,13 @@ func serve() error {
 }
 
 func preloadSSOSessions(ctx context.Context, store *metadata.Store, opManager *onepasswordmanager.Manager, ssoService *awssso.Service) {
-	preloadCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
-	defer cancel()
+	statusCtx, cancelStatus := onepasswordmanager.WithTimeout(ctx)
+	status := opManager.Status(statusCtx, "")
+	cancelStatus()
+	if !status.Connected {
+		log.Printf("preload SSO sessions: skipped: %s", status.Message)
+		return
+	}
 
 	index, err := store.Load()
 	if err != nil {
@@ -119,7 +127,9 @@ func preloadSSOSessions(ctx context.Context, store *metadata.Store, opManager *o
 		if summary.AuthType != "sso" {
 			continue
 		}
-		input, err := opManager.LoadConfigItem(preloadCtx, summary)
+		loadCtx, cancelLoad := onepasswordmanager.WithTimeout(ctx)
+		input, err := opManager.LoadConfigItem(loadCtx, summary)
+		cancelLoad()
 		if err != nil {
 			log.Printf("preload SSO sessions: config %s load failed: %v", summary.ID, err)
 			continue

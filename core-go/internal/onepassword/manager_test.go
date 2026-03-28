@@ -2,8 +2,10 @@ package onepasswordmanager
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	onepassword "github.com/1password/onepassword-sdk-go"
 
@@ -135,6 +137,35 @@ func TestResolveStoredSecretsSkipsResolveWhenValueAlreadyPresent(t *testing.T) {
 	}
 }
 
+func TestResolveStoredSecretsReturnsResolutionError(t *testing.T) {
+	sectionID := ssoSectionID
+	manager := &Manager{
+		fieldResolver: func(ctx context.Context, client *onepassword.Client, vaultID, itemID, sectionID, fieldID, attribute string) (string, error) {
+			return "", errors.New("connection was unexpectedly dropped by the desktop app")
+		},
+	}
+	input := metadata.ConfigInput{}
+	item := onepassword.Item{
+		VaultID: "vault-1",
+		ID:      "item-1",
+		Fields: []onepassword.ItemField{
+			{
+				ID:        "sso_password",
+				SectionID: &sectionID,
+				FieldType: onepassword.ItemFieldTypeConcealed,
+			},
+		},
+	}
+
+	err := manager.resolveStoredSecrets(context.Background(), nil, item, &input)
+	if err == nil {
+		t.Fatal("expected stored secret resolution error to be returned")
+	}
+	if !strings.Contains(err.Error(), "unexpectedly dropped") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestNewMFAFieldTreatsRawSecretAsTOTP(t *testing.T) {
 	field := newMFAField(stsSectionID, canonicalTOTPFieldID("mfa_totp"), "MFA TOTP", "SXU4MUR2ABCDEFGH234567")
 	if field.FieldType != onepassword.ItemFieldTypeTOTP {
@@ -247,5 +278,197 @@ func TestDecodeConfigInputFallsBackToGenericFieldTitles(t *testing.T) {
 	}
 	if input.AWSAccessKeyID != "AKIAEXAMPLE" {
 		t.Fatalf("expected access key fallback, got %q", input.AWSAccessKeyID)
+	}
+}
+
+func TestShouldRetryClientErrorWhenDesktopAppDropsConnection(t *testing.T) {
+	err := shouldRetryClientError(errors.New("connection was unexpectedly dropped by the desktop app"))
+	if !err {
+		t.Fatal("expected dropped desktop app connection to be retryable")
+	}
+}
+
+func TestShouldRetryClientErrorWhenDesktopAppIsUnavailable(t *testing.T) {
+	err := shouldRetryClientError(errors.New("1Password desktop application not found"))
+	if !err {
+		t.Fatal("expected desktop application lookup failure to be retryable")
+	}
+}
+
+func TestShouldRetryClientErrorWhenDarwinInitReturnsRetryableCode(t *testing.T) {
+	err := shouldRetryClientError(errors.New(
+		"error initializing client: an internal error occurred. Please contact 1Password support and mention the return code: -2",
+	))
+	if !err {
+		t.Fatal("expected darwin init return code -2 to be retryable")
+	}
+}
+
+func TestStatusRetriesWhenCachedDesktopConnectionDrops(t *testing.T) {
+	attempts := 0
+	manager := &Manager{
+		clientFactory: func(ctx context.Context, accountName string) (*onepassword.Client, error) {
+			attempts++
+			return &onepassword.Client{}, nil
+		},
+		connectionProbe: func(ctx context.Context, client *onepassword.Client) error {
+			if attempts == 1 {
+				return errors.New("connection was unexpectedly dropped by the desktop app")
+			}
+			return nil
+		},
+	}
+
+	status := manager.Status(context.Background(), "demo-account")
+	if !status.Connected {
+		t.Fatalf("expected status check to recover from dropped connection, got %#v", status)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected client to be recreated after dropped connection, got %d creations", attempts)
+	}
+}
+
+func TestStatusRetriesWhenDesktopAppBecomesAvailableDuringInitialization(t *testing.T) {
+	attempts := 0
+	manager := &Manager{
+		clientFactory: func(ctx context.Context, accountName string) (*onepassword.Client, error) {
+			attempts++
+			if attempts == 1 {
+				return nil, errors.New("1Password desktop application not found")
+			}
+			return &onepassword.Client{}, nil
+		},
+		connectionProbe: func(ctx context.Context, client *onepassword.Client) error {
+			return nil
+		},
+	}
+
+	status := manager.Status(context.Background(), "demo-account")
+	if !status.Connected {
+		t.Fatalf("expected status check to recover once desktop app becomes available, got %#v", status)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected client initialization to retry, got %d attempts", attempts)
+	}
+}
+
+func TestStatusRetriesWhenDarwinInitReturnsRetryableCode(t *testing.T) {
+	attempts := 0
+	manager := &Manager{
+		clientFactory: func(ctx context.Context, accountName string) (*onepassword.Client, error) {
+			attempts++
+			if attempts == 1 {
+				return nil, errors.New("error initializing client: an internal error occurred. Please contact 1Password support and mention the return code: -2")
+			}
+			return &onepassword.Client{}, nil
+		},
+		connectionProbe: func(ctx context.Context, client *onepassword.Client) error {
+			return nil
+		},
+	}
+
+	status := manager.Status(context.Background(), "demo-account")
+	if !status.Connected {
+		t.Fatalf("expected status check to recover from darwin init return code -2, got %#v", status)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected client initialization to retry after darwin return code -2, got %d attempts", attempts)
+	}
+}
+
+func TestStatusTreatsVaultListAccessAsConnected(t *testing.T) {
+	manager := &Manager{
+		clientFactory: func(ctx context.Context, accountName string) (*onepassword.Client, error) {
+			return &onepassword.Client{}, nil
+		},
+		vaultLister: func(ctx context.Context, client *onepassword.Client) ([]onepassword.VaultOverview, error) {
+			return []onepassword.VaultOverview{
+				{ID: "vault-1", Title: "Shared"},
+			}, nil
+		},
+	}
+
+	status := manager.Status(context.Background(), "demo-account")
+	if !status.Connected {
+		t.Fatalf("expected status check to succeed when vault listing is available, got %#v", status)
+	}
+}
+
+func TestPrivateVaultStillPrefersPersonalVaultNames(t *testing.T) {
+	manager := &Manager{
+		vaultLister: func(ctx context.Context, client *onepassword.Client) ([]onepassword.VaultOverview, error) {
+			return []onepassword.VaultOverview{
+				{ID: "vault-1", Title: "Shared"},
+				{ID: "vault-2", Title: "Private"},
+			}, nil
+		},
+	}
+
+	vault, err := manager.privateVault(context.Background(), &onepassword.Client{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vault.ID != "vault-2" {
+		t.Fatalf("expected private vault to be selected, got %#v", vault)
+	}
+}
+
+func TestClientForAccountRecreatesIdleClient(t *testing.T) {
+	attempts := 0
+	manager := &Manager{
+		clientFactory: func(ctx context.Context, accountName string) (*onepassword.Client, error) {
+			attempts++
+			return &onepassword.Client{}, nil
+		},
+	}
+
+	first, err := manager.clientForAccount(context.Background(), "demo-account")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	manager.mu.Lock()
+	manager.lastClientUse = time.Now().Add(-clientMaxIdle - time.Second)
+	manager.mu.Unlock()
+
+	second, err := manager.clientForAccount(context.Background(), "demo-account")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if attempts != 2 {
+		t.Fatalf("expected idle client to be recreated, got %d creations", attempts)
+	}
+	if first == second {
+		t.Fatal("expected a new client instance after the idle window elapsed")
+	}
+}
+
+func TestWithClientRetryHonorsContextWhileWaitingForSDKLock(t *testing.T) {
+	manager := &Manager{
+		clientFactory: func(ctx context.Context, accountName string) (*onepassword.Client, error) {
+			return &onepassword.Client{}, nil
+		},
+	}
+
+	gate := manager.sdkLockChannel()
+	<-gate
+	defer func() {
+		gate <- struct{}{}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	called := false
+	_, err := withClientRetry(ctx, manager, "demo-account", func(client *onepassword.Client) (struct{}, error) {
+		called = true
+		return struct{}{}, nil
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context deadline exceeded while waiting for SDK lock, got %v", err)
+	}
+	if called {
+		t.Fatal("expected operation not to run when the SDK lock could not be acquired in time")
 	}
 }

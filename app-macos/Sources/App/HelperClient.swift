@@ -47,9 +47,9 @@ final class HelperClient: @unchecked Sendable {
   private struct ItemParams: Encodable { let accountName: String; let vaultId: String; let itemId: String }
   private struct CancelGenerateResponse: Decodable { let cancelled: Bool }
 
-  private let process = Process()
-  private let inputPipe = Pipe()
-  private let outputPipe = Pipe()
+  private var process: Process?
+  private var inputPipe: Pipe?
+  private var outputPipe: Pipe?
   private let bufferQueue = DispatchQueue(label: "AwsCredentialManager.HelperClient.buffer")
   private var buffer = Data()
   private var waiters: [String: (Result<Data, Error>) -> Void] = [:]
@@ -58,7 +58,13 @@ final class HelperClient: @unchecked Sendable {
     guard let helperPath = resolveHelperPath() else {
       throw HelperError.missingHelperPath
     }
-    guard !process.isRunning else { return }
+    if let process, process.isRunning {
+      return
+    }
+
+    let process = Process()
+    let inputPipe = Pipe()
+    let outputPipe = Pipe()
 
     process.executableURL = URL(fileURLWithPath: helperPath)
     process.arguments = ["serve"]
@@ -74,6 +80,9 @@ final class HelperClient: @unchecked Sendable {
 
     do {
       try process.run()
+      self.process = process
+      self.inputPipe = inputPipe
+      self.outputPipe = outputPipe
     } catch {
       throw HelperError.startupFailed(error.localizedDescription)
     }
@@ -105,10 +114,14 @@ final class HelperClient: @unchecked Sendable {
   }
 
   func stop() {
-    outputPipe.fileHandleForReading.readabilityHandler = nil
-    if process.isRunning {
+    outputPipe?.fileHandleForReading.readabilityHandler = nil
+    if let process, process.isRunning {
       process.terminate()
+      process.waitUntilExit()
     }
+    process = nil
+    inputPipe = nil
+    outputPipe = nil
   }
 
   func restart() throws {
@@ -223,6 +236,12 @@ final class HelperClient: @unchecked Sendable {
     let encoder = JSONEncoder()
     encoder.dateEncodingStrategy = .iso8601
     let payload = try encoder.encode(request) + Data([0x0A])
+    guard let inputPipe else {
+      bufferQueue.sync {
+        _ = waiters.removeValue(forKey: requestID)
+      }
+      throw HelperError.startupFailed("Helper is not running.")
+    }
     inputPipe.fileHandleForWriting.write(payload)
 
     if semaphore.wait(timeout: .now() + timeout) == .timedOut {

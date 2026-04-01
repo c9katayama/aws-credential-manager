@@ -471,6 +471,7 @@ func shouldRetryClientError(err error) bool {
 	message := strings.ToLower(err.Error())
 	retryableInitError := strings.Contains(message, "error initializing client:") &&
 		(strings.Contains(message, "return code: -2") ||
+			strings.Contains(message, "return code: -6") ||
 			strings.Contains(message, "return code: -3") ||
 			strings.Contains(message, "return code: -7"))
 	switch {

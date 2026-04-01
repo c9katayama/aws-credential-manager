@@ -297,10 +297,10 @@ func TestShouldRetryClientErrorWhenDesktopAppIsUnavailable(t *testing.T) {
 
 func TestShouldRetryClientErrorWhenDarwinInitReturnsRetryableCode(t *testing.T) {
 	err := shouldRetryClientError(errors.New(
-		"error initializing client: an internal error occurred. Please contact 1Password support and mention the return code: -2",
+		"error initializing client: an internal error occurred. Please contact 1Password support and mention the return code: -6",
 	))
 	if !err {
-		t.Fatal("expected darwin init return code -2 to be retryable")
+		t.Fatal("expected darwin init return code -6 to be retryable")
 	}
 }
 
@@ -358,7 +358,7 @@ func TestStatusRetriesWhenDarwinInitReturnsRetryableCode(t *testing.T) {
 		clientFactory: func(ctx context.Context, accountName string) (*onepassword.Client, error) {
 			attempts++
 			if attempts == 1 {
-				return nil, errors.New("error initializing client: an internal error occurred. Please contact 1Password support and mention the return code: -2")
+				return nil, errors.New("error initializing client: an internal error occurred. Please contact 1Password support and mention the return code: -6")
 			}
 			return &onepassword.Client{}, nil
 		},
@@ -369,10 +369,10 @@ func TestStatusRetriesWhenDarwinInitReturnsRetryableCode(t *testing.T) {
 
 	status := manager.Status(context.Background(), "demo-account")
 	if !status.Connected {
-		t.Fatalf("expected status check to recover from darwin init return code -2, got %#v", status)
+		t.Fatalf("expected status check to recover from darwin init return code -6, got %#v", status)
 	}
 	if attempts != 2 {
-		t.Fatalf("expected client initialization to retry after darwin return code -2, got %d attempts", attempts)
+		t.Fatalf("expected client initialization to retry after darwin return code -6, got %d attempts", attempts)
 	}
 }
 

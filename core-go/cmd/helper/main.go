@@ -72,7 +72,6 @@ func serve() error {
 	backgroundCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go scheduler.New(store, generatorService, 60*time.Second).Start(backgroundCtx)
-	go preloadSSOSessions(backgroundCtx, store, opManager, ssoService)
 
 	scanner := bufio.NewScanner(os.Stdin)
 	writer := bufio.NewWriter(os.Stdout)
@@ -107,35 +106,6 @@ func serve() error {
 
 	wg.Wait()
 	return scanner.Err()
-}
-
-func preloadSSOSessions(ctx context.Context, store *metadata.Store, opManager *onepasswordmanager.Manager, ssoService *awssso.Service) {
-	statusCtx, cancelStatus := onepasswordmanager.WithTimeout(ctx)
-	status := opManager.Status(statusCtx, "")
-	cancelStatus()
-	if !status.Connected {
-		log.Printf("preload SSO sessions: skipped: %s", status.Message)
-		return
-	}
-
-	index, err := store.Load()
-	if err != nil {
-		log.Printf("preload SSO sessions: metadata load failed: %v", err)
-		return
-	}
-	for _, summary := range index.Configs {
-		if summary.AuthType != "sso" {
-			continue
-		}
-		loadCtx, cancelLoad := onepasswordmanager.WithTimeout(ctx)
-		input, err := opManager.LoadConfigItem(loadCtx, summary)
-		cancelLoad()
-		if err != nil {
-			log.Printf("preload SSO sessions: config %s load failed: %v", summary.ID, err)
-			continue
-		}
-		ssoService.PrimeFromInput(input)
-	}
 }
 
 func writeResponse(writer *bufio.Writer, response ipc.Response) error {

@@ -51,8 +51,11 @@ final class HelperClient: @unchecked Sendable {
   private var inputPipe: Pipe?
   private var outputPipe: Pipe?
   private let bufferQueue = DispatchQueue(label: "AwsCredentialManager.HelperClient.buffer")
+  private let lifecycleCondition = NSCondition()
   private var buffer = Data()
   private var waiters: [String: (Result<Data, Error>) -> Void] = [:]
+  private var activeRequests = 0
+  private var isRestarting = false
 
   func start() throws {
     guard let helperPath = resolveHelperPath() else {
@@ -125,14 +128,23 @@ final class HelperClient: @unchecked Sendable {
   }
 
   func restart() throws {
+    lifecycleCondition.lock()
+    isRestarting = true
+    while activeRequests > 0 {
+      lifecycleCondition.wait()
+    }
+    lifecycleCondition.unlock()
+    defer {
+      lifecycleCondition.lock()
+      isRestarting = false
+      lifecycleCondition.broadcast()
+      lifecycleCondition.unlock()
+    }
+
     stop()
     bufferQueue.sync {
       buffer.removeAll(keepingCapacity: false)
-      let pending = waiters
       waiters.removeAll()
-      for (_, callback) in pending {
-        callback(.failure(HelperError.startupFailed("Helper restarted while request was in flight.")))
-      }
     }
     try start()
   }
@@ -221,6 +233,9 @@ final class HelperClient: @unchecked Sendable {
     params: Params?,
     timeout: TimeInterval
   ) throws -> ResultType {
+    let writer = try beginRequest()
+    defer { endRequest() }
+
     let requestID = UUID().uuidString
     let semaphore = DispatchSemaphore(value: 0)
     var finalResult: Result<Data, Error> = .failure(HelperError.requestTimeout)
@@ -236,13 +251,7 @@ final class HelperClient: @unchecked Sendable {
     let encoder = JSONEncoder()
     encoder.dateEncodingStrategy = .iso8601
     let payload = try encoder.encode(request) + Data([0x0A])
-    guard let inputPipe else {
-      bufferQueue.sync {
-        _ = waiters.removeValue(forKey: requestID)
-      }
-      throw HelperError.startupFailed("Helper is not running.")
-    }
-    inputPipe.fileHandleForWriting.write(payload)
+    writer.write(payload)
 
     if semaphore.wait(timeout: .now() + timeout) == .timedOut {
       _ = bufferQueue.sync {
@@ -294,5 +303,29 @@ final class HelperClient: @unchecked Sendable {
         callback(.failure(error))
       }
     }
+  }
+
+  private func beginRequest() throws -> FileHandle {
+    lifecycleCondition.lock()
+    while isRestarting {
+      lifecycleCondition.wait()
+    }
+    guard let inputPipe else {
+      lifecycleCondition.unlock()
+      throw HelperError.startupFailed("Helper is not running.")
+    }
+    activeRequests += 1
+    let writer = inputPipe.fileHandleForWriting
+    lifecycleCondition.unlock()
+    return writer
+  }
+
+  private func endRequest() {
+    lifecycleCondition.lock()
+    activeRequests = max(0, activeRequests - 1)
+    if activeRequests == 0 {
+      lifecycleCondition.broadcast()
+    }
+    lifecycleCondition.unlock()
   }
 }

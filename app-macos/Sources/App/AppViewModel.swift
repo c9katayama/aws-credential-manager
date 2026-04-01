@@ -48,7 +48,6 @@ final class AppViewModel: ObservableObject {
   private let helperClient: HelperClient
   private let onePasswordStatusTimeout: TimeInterval = 30.0
   private let onePasswordInteractiveTimeout: TimeInterval = 180.0
-  private let onePasswordInteractiveAttemptTimeout: TimeInterval = 10.0
   private let onePasswordHeartbeatIntervalNanoseconds: UInt64 = 5 * 60 * 1_000_000_000
   private var onePasswordHeartbeatTask: Task<Void, Never>?
 
@@ -72,7 +71,7 @@ final class AppViewModel: ObservableObject {
 
   var shouldShowOnePasswordAction: Bool {
     !settingsDraft.selectedOnePasswordAccountName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      && (needsOnePasswordAuthorization || needsOnePasswordReconnect)
+      && !isOnePasswordAuthorized
   }
 
   var onePasswordStatusColor: Color {
@@ -112,23 +111,13 @@ final class AppViewModel: ObservableObject {
       settingsDraft.normalize()
       settingsPath = settings.path
       let selectedAccount = settingsDraft.selectedOnePasswordAccountName.trimmingCharacters(in: .whitespacesAndNewlines)
-      if selectedAccount.isEmpty {
-        updateOnePasswordDisplay(
-          isConfigured: false,
-          accountName: settingsDraft.selectedOnePasswordAccountName,
-          fallbackMessage: health.onePassword.message
-        )
-      } else {
-        do {
-          let statusTimeout = onePasswordStatusTimeout
-          let statusResponse = try await run {
-            try helperClient.onePasswordStatus(accountName: selectedAccount, timeout: statusTimeout)
-          }
-          applyOnePasswordStatus(statusResponse.status, fallbackAccountName: selectedAccount)
-        } catch {
-          applyOnePasswordError(error, accountName: selectedAccount)
-        }
-      }
+      updateOnePasswordDisplay(
+        isConfigured: !selectedAccount.isEmpty,
+        accountName: selectedAccount,
+        fallbackMessage: selectedAccount.isEmpty
+          ? health.onePassword.message
+          : "Connection has not been checked yet."
+      )
       lastError = nil
     } catch {
       lastError = error.localizedDescription
@@ -672,11 +661,14 @@ final class AppViewModel: ObservableObject {
     let normalized = message.lowercased()
     let retryableInitError = normalized.contains("error initializing client")
       && (normalized.contains("return code: -2")
+        || normalized.contains("return code: -6")
         || normalized.contains("return code: -3")
         || normalized.contains("return code: -7"))
     return normalized.contains("connection channel is closed")
       || normalized.contains("connection was unexpectedly dropped by the desktop app")
       || normalized.contains("desktop application not found")
+      || normalized.contains("failed to start helper")
+      || normalized.contains("helper restarted while request was in flight")
       || normalized.contains("request timed out")
       || normalized.contains("timed out")
       || retryableInitError
@@ -691,6 +683,11 @@ final class AppViewModel: ObservableObject {
     }
     if normalized.lowercased().contains("desktop application not found") {
       return "Start the 1Password desktop app, then reconnect."
+    }
+    if normalized.lowercased().contains("failed to start helper")
+      || normalized.lowercased().contains("helper restarted while request was in flight")
+    {
+      return "The helper restarted while reconnecting. Try reconnecting again."
     }
     if normalized.lowercased().contains("timed out") {
       return "1Password did not respond in time. Reopen 1Password and try again."
@@ -721,28 +718,25 @@ final class AppViewModel: ObservableObject {
       needsAuthorization: false
     )
 
-    var lastError: Error?
-    while Date() < deadline {
-      do {
-        let remaining = max(1.0, deadline.timeIntervalSinceNow)
-        let attemptTimeout = min(onePasswordInteractiveAttemptTimeout, remaining)
-        try await run {
-          try helperClient.restart()
-        }
-        let vaultsResponse = try await run {
-          try helperClient.onePasswordVaults(accountName: accountName, timeout: attemptTimeout)
-        }
-        return vaultsResponse
-      } catch {
-        lastError = error
-        if !shouldRetryInteractiveConnection(error) {
-          throw error
-        }
-        try? await Task.sleep(nanoseconds: 1_000_000_000)
-      }
+    try await run {
+      try helperClient.restart()
     }
 
-    throw lastError ?? OnePasswordConnectError(message: "Timed out while waiting for 1Password authorization.")
+    do {
+      return try await run {
+        try helperClient.onePasswordVaults(accountName: accountName, timeout: timeout)
+      }
+    } catch {
+      if shouldRetryInteractiveConnection(error) && Date() < deadline {
+        return try await run {
+          try helperClient.onePasswordVaults(
+            accountName: accountName,
+            timeout: max(1.0, deadline.timeIntervalSinceNow)
+          )
+        }
+      }
+      throw error
+    }
   }
 
   private func startOnePasswordHeartbeat() {

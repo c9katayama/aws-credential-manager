@@ -39,6 +39,13 @@ func TestCreateUpdateAndRecordResult(t *testing.T) {
 		VaultID:                "vault-2",
 		ItemID:                 "item-2",
 		AutoRefreshEnabled:     false,
+		SSOStartURL:            "https://example.awsapps.com/start",
+		SSORegion:              "ap-northeast-1",
+		SSOUsername:            "demo@example.com",
+		SSOPassword:            "password",
+		SSOMFATOTP:             "otpauth://totp/example?secret=ABCDEF1234567890",
+		SSOAccountID:           "123456789012",
+		SSORoleName:            "AdministratorAccess",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -75,6 +82,52 @@ func TestCreateRejectsInvalidSTSAccessKey(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected invalid access key to be rejected")
+	}
+}
+
+func TestCreateAllowsBrowserPKCESSOWithoutLegacyCredentials(t *testing.T) {
+	store := newTestStore(t)
+
+	created, err := store.Create(ConfigInput{
+		SettingName:            "sandbox-sso",
+		AuthType:               "sso",
+		OnePasswordAccountName: "soracom",
+		ProfileName:            "sandbox-sso",
+		VaultID:                "vault",
+		ItemID:                 "item",
+		SSOStartURL:            "https://example.awsapps.com/start",
+		SSOIssuerURL:           "https://d-abc123.awsapps.com/start",
+		SSORegion:              "ap-northeast-1",
+		SSOLoginMethod:         "browserPkce",
+		SSOAccountID:           "123456789012",
+		SSORoleName:            "AdministratorAccess",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.AuthType != "sso" {
+		t.Fatalf("expected sso summary, got %+v", created)
+	}
+}
+
+func TestCreateRejectsInvalidSSOLoginMethod(t *testing.T) {
+	store := newTestStore(t)
+
+	_, err := store.Create(ConfigInput{
+		SettingName:            "sandbox-sso",
+		AuthType:               "sso",
+		OnePasswordAccountName: "soracom",
+		ProfileName:            "sandbox-sso",
+		VaultID:                "vault",
+		ItemID:                 "item",
+		SSOStartURL:            "https://example.awsapps.com/start",
+		SSORegion:              "ap-northeast-1",
+		SSOLoginMethod:         "browserOnly",
+		SSOAccountID:           "123456789012",
+		SSORoleName:            "AdministratorAccess",
+	})
+	if err == nil {
+		t.Fatal("expected invalid ssoLoginMethod to be rejected")
 	}
 }
 

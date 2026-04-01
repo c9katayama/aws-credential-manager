@@ -61,6 +61,7 @@ type ConfigInput struct {
 	SSOStartURL            string `json:"ssoStartUrl,omitempty"`
 	SSOIssuerURL           string `json:"ssoIssuerUrl,omitempty"`
 	SSORegion              string `json:"ssoRegion,omitempty"`
+	SSOLoginMethod         string `json:"ssoLoginMethod,omitempty"`
 	SSOUsername            string `json:"ssoUsername,omitempty"`
 	SSOPassword            string `json:"ssoPassword,omitempty"`
 	SSOMFATOTP             string `json:"ssoMfaTotp,omitempty"`
@@ -396,6 +397,47 @@ func validateInput(input ConfigInput) error {
 		if err := validateSTSInput(input); err != nil {
 			return err
 		}
+	}
+	if input.AuthType == "sso" {
+		if err := validateSSOInput(input); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateSSOInput(input ConfigInput) error {
+	loginMethod := strings.TrimSpace(input.SSOLoginMethod)
+	switch loginMethod {
+	case "", "deviceCode", "browserPkce":
+	default:
+		return errors.New("ssoLoginMethod must be either 'deviceCode' or 'browserPkce'")
+	}
+
+	if strings.TrimSpace(input.SSOStartURL) == "" {
+		return errors.New("ssoStartUrl is required")
+	}
+	if strings.TrimSpace(input.SSORegion) == "" {
+		return errors.New("ssoRegion is required")
+	}
+	if strings.TrimSpace(input.SSOAccountID) == "" {
+		return errors.New("ssoAccountId is required")
+	}
+	if strings.TrimSpace(input.SSORoleName) == "" {
+		return errors.New("ssoRoleName is required")
+	}
+
+	if loginMethod == "browserPkce" {
+		return nil
+	}
+	if strings.TrimSpace(input.SSOUsername) == "" {
+		return errors.New("ssoUsername is required")
+	}
+	if strings.TrimSpace(input.SSOPassword) == "" {
+		return errors.New("ssoPassword is required")
+	}
+	if strings.TrimSpace(input.SSOMFATOTP) == "" {
+		return errors.New("ssoMfaTotp is required")
 	}
 	return nil
 }

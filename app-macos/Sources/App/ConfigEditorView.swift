@@ -642,11 +642,25 @@ struct ConfigEditorView: View {
     VStack(alignment: .leading, spacing: 12) {
       Text("SSO Configuration")
         .font(.headline)
+      Picker("Sign-in Method", selection: $draft.ssoLoginMethod) {
+        ForEach(SSOSignInMethod.allCases) { method in
+          Text(method.displayName).tag(method)
+        }
+      }
+      .pickerStyle(.segmented)
       labeledField("SSO Start URL", text: $draft.ssoStartUrl, monospaced: true)
+      labeledField("SSO Issuer URL (Optional)", text: $draft.ssoIssuerUrl, monospaced: true)
       labeledField("SSO Region", text: $draft.ssoRegion)
-      labeledField("Username", text: $draft.ssoUsername)
-      labeledField("Password", text: $draft.ssoPassword, secure: true, monospaced: true)
-      labeledField("MFA TOTP URI or Code", text: $draft.ssoMfaTotp, secure: true, monospaced: true)
+      if draft.ssoLoginMethod == .deviceCode {
+        labeledField("Username", text: $draft.ssoUsername)
+        labeledField("Password", text: $draft.ssoPassword, secure: true, monospaced: true)
+        labeledField("MFA TOTP URI or Code", text: $draft.ssoMfaTotp, secure: true, monospaced: true)
+      } else {
+        Text("Browser (PKCE) opens the AWS sign-in page in your browser. Use this for Google or other external SAML IdPs.")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
       labeledField("AWS Account ID", text: $draft.ssoAccountId)
       labeledField("AWS Role Name", text: $draft.ssoRoleName)
       labeledField("Session Duration Minutes", text: $draft.sessionDuration)
@@ -713,14 +727,18 @@ struct ConfigEditorView: View {
       if isEditing {
         return commonValid
       }
-      return commonValid
+      let baseValid = commonValid
         && !draft.ssoStartUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         && !draft.ssoRegion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        && !draft.ssoAccountId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        && !draft.ssoRoleName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      if draft.ssoLoginMethod == .browserPkce {
+        return baseValid
+      }
+      return baseValid
         && !draft.ssoUsername.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         && !draft.ssoPassword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         && !draft.ssoMfaTotp.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        && !draft.ssoAccountId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        && !draft.ssoRoleName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
   }
 }

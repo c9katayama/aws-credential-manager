@@ -31,3 +31,18 @@ func TestIsInvalidClientErrorIgnoresOtherErrors(t *testing.T) {
 		t.Fatal("expected non-client API errors to be ignored")
 	}
 }
+
+func TestNormalizeLoginMethodDefaultsToDeviceCode(t *testing.T) {
+	if method := normalizeLoginMethod(""); method != deviceCodeLoginMethod {
+		t.Fatalf("expected empty method to default to deviceCode, got %q", method)
+	}
+	if method := normalizeLoginMethod("legacy"); method != deviceCodeLoginMethod {
+		t.Fatalf("expected unknown method to default to deviceCode, got %q", method)
+	}
+}
+
+func TestNormalizeLoginMethodPreservesBrowserPKCE(t *testing.T) {
+	if method := normalizeLoginMethod(browserPKCELoginMethod); method != browserPKCELoginMethod {
+		t.Fatalf("expected browserPkce to be preserved, got %q", method)
+	}
+}

@@ -29,6 +29,8 @@ const (
 	authCodeGrantType       = "authorization_code"
 	deviceGrantType         = "urn:ietf:params:oauth:grant-type:device_code"
 	refreshGrantType        = "refresh_token"
+	deviceCodeLoginMethod   = "deviceCode"
+	browserPKCELoginMethod  = "browserPkce"
 	clientType              = "public"
 	pkceChallengeMethod     = "S256"
 	authorizationScope      = "sso:account:access"
@@ -96,14 +98,6 @@ func (s *Service) Generate(ctx context.Context, input metadata.ConfigInput) (Ses
 	ssoClient := sso.NewFromConfig(cfg)
 
 	session, _ := s.cache.Get(input.ID)
-	if session.Registration.ClientID == "" || time.Now().After(session.Registration.ClientSecretExpiresAt) {
-		registration, err := s.registerClient(ctx, oidcClient, input)
-		if err != nil {
-			return SessionResult{}, err
-		}
-		session.Registration = registration
-	}
-
 	accessToken, refreshToken, browserURL, accessExpiry, registration, err := s.ensureAccessToken(ctx, oidcClient, input, session)
 	if err != nil {
 		return SessionResult{}, err
@@ -172,12 +166,15 @@ func (s *Service) PrimeFromInput(input metadata.ConfigInput) {
 	s.cache.Put(input.ID, session)
 }
 
-func (s *Service) registerClient(ctx context.Context, client *ssooidc.Client, input metadata.ConfigInput) (sessioncache.Registration, error) {
+func (s *Service) registerClient(ctx context.Context, client *ssooidc.Client, input metadata.ConfigInput, redirectURI string) (sessioncache.Registration, error) {
+	if strings.TrimSpace(redirectURI) == "" {
+		redirectURI = registeredRedirectURI
+	}
 	out, err := client.RegisterClient(ctx, &ssooidc.RegisterClientInput{
 		ClientName:   aws.String("aws-credential-manager"),
 		ClientType:   aws.String(clientType),
 		GrantTypes:   []string{authCodeGrantType, refreshGrantType, deviceGrantType},
-		RedirectUris: []string{registeredRedirectURI},
+		RedirectUris: []string{redirectURI},
 		IssuerUrl:    aws.String(strings.TrimSpace(input.SSOIssuerURL)),
 		Scopes:       []string{authorizationScope},
 	})
@@ -216,12 +213,21 @@ func (s *Service) ensureAccessToken(ctx context.Context, client *ssooidc.Client,
 		}
 	}
 
-	registration, err := s.registerClient(ctx, client, input)
-	if err != nil {
-		return "", "", "", time.Time{}, sessioncache.Registration{}, err
+	loginMethod := normalizeLoginMethod(input.SSOLoginMethod)
+	var accessToken, refreshToken, browserURL string
+	var accessExpiry time.Time
+	var registration sessioncache.Registration
+	var err error
+	switch loginMethod {
+	case browserPKCELoginMethod:
+		accessToken, refreshToken, browserURL, accessExpiry, registration, err = s.authorizationCodeFlow(ctx, client, input)
+	default:
+		registration, err = s.registerClient(ctx, client, input, "")
+		if err != nil {
+			return "", "", "", time.Time{}, sessioncache.Registration{}, err
+		}
+		accessToken, refreshToken, browserURL, accessExpiry, err = s.deviceAuthorizationFlow(ctx, client, input, registration)
 	}
-
-	accessToken, refreshToken, browserURL, accessExpiry, err := s.deviceAuthorizationFlow(ctx, client, input, registration)
 	if err != nil {
 		return "", "", browserURL, time.Time{}, registration, err
 	}
@@ -286,28 +292,33 @@ func (s *Service) deviceAuthorizationFlow(ctx context.Context, client *ssooidc.C
 	}
 }
 
-func (s *Service) authorizationCodeFlow(ctx context.Context, client *ssooidc.Client, input metadata.ConfigInput, registration sessioncache.Registration) (string, string, string, time.Time, error) {
+func (s *Service) authorizationCodeFlow(ctx context.Context, client *ssooidc.Client, input metadata.ConfigInput) (string, string, string, time.Time, sessioncache.Registration, error) {
 	callbackServer, err := newAuthCodeCallbackServer()
 	if err != nil {
-		return "", "", "", time.Time{}, err
+		return "", "", "", time.Time{}, sessioncache.Registration{}, err
 	}
 	defer callbackServer.Close()
 
+	registration, err := s.registerClient(ctx, client, input, callbackServer.RedirectURI())
+	if err != nil {
+		return "", "", "", time.Time{}, sessioncache.Registration{}, err
+	}
+
 	codeVerifier, err := randomURLSafeString(64)
 	if err != nil {
-		return "", "", "", time.Time{}, err
+		return "", "", "", time.Time{}, sessioncache.Registration{}, err
 	}
 	state, err := randomURLSafeString(32)
 	if err != nil {
-		return "", "", "", time.Time{}, err
+		return "", "", "", time.Time{}, sessioncache.Registration{}, err
 	}
 
 	browserURL := buildAuthorizationURL(strings.TrimSpace(input.SSORegion), registration.ClientID, callbackServer.RedirectURI(), state, codeVerifier)
 	if browserURL == "" {
-		return "", "", "", time.Time{}, fmt.Errorf("failed to build SSO authorization URL")
+		return "", "", "", time.Time{}, sessioncache.Registration{}, fmt.Errorf("failed to build SSO authorization URL")
 	}
 	if err := exec.Command("open", browserURL).Run(); err != nil {
-		return "", "", browserURL, time.Time{}, fmt.Errorf("failed to open browser for SSO login: %w", err)
+		return "", "", browserURL, time.Time{}, sessioncache.Registration{}, fmt.Errorf("failed to open browser for SSO login: %w", err)
 	}
 
 	callbackCtx, cancel := context.WithTimeout(ctx, authorizationWaitWindow)
@@ -315,10 +326,10 @@ func (s *Service) authorizationCodeFlow(ctx context.Context, client *ssooidc.Cli
 
 	code, returnedState, err := callbackServer.WaitForCallback(callbackCtx)
 	if err != nil {
-		return "", "", browserURL, time.Time{}, err
+		return "", "", browserURL, time.Time{}, sessioncache.Registration{}, err
 	}
 	if returnedState != state {
-		return "", "", browserURL, time.Time{}, fmt.Errorf("SSO callback state mismatch")
+		return "", "", browserURL, time.Time{}, sessioncache.Registration{}, fmt.Errorf("SSO callback state mismatch")
 	}
 
 	tokenOut, err := client.CreateToken(ctx, &ssooidc.CreateTokenInput{
@@ -330,11 +341,11 @@ func (s *Service) authorizationCodeFlow(ctx context.Context, client *ssooidc.Cli
 		RedirectUri:  aws.String(callbackServer.RedirectURI()),
 	})
 	if err != nil {
-		return "", "", browserURL, time.Time{}, fmt.Errorf("SSO token exchange failed: %w", err)
+		return "", "", browserURL, time.Time{}, sessioncache.Registration{}, fmt.Errorf("SSO token exchange failed: %w", err)
 	}
 
 	expiry := time.Now().Add(time.Duration(tokenOut.ExpiresIn) * time.Second)
-	return aws.ToString(tokenOut.AccessToken), aws.ToString(tokenOut.RefreshToken), browserURL, expiry, nil
+	return aws.ToString(tokenOut.AccessToken), aws.ToString(tokenOut.RefreshToken), browserURL, expiry, registration, nil
 }
 
 func buildAuthorizationURL(region, clientID, redirectURI, state, codeVerifier string) string {
@@ -461,6 +472,15 @@ func parseSessionTime(raw string) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	return value.UTC(), true
+}
+
+func normalizeLoginMethod(raw string) string {
+	switch strings.TrimSpace(raw) {
+	case browserPKCELoginMethod:
+		return browserPKCELoginMethod
+	default:
+		return deviceCodeLoginMethod
+	}
 }
 
 func newAuthCodeCallbackServer() (*authCodeCallbackServer, error) {

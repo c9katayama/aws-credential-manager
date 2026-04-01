@@ -16,6 +16,22 @@ enum AuthType: String, Codable, CaseIterable, Identifiable, Sendable {
   }
 }
 
+enum SSOSignInMethod: String, Codable, CaseIterable, Identifiable, Sendable {
+  case deviceCode
+  case browserPkce
+
+  var id: String { rawValue }
+
+  var displayName: String {
+    switch self {
+    case .deviceCode:
+      return "Device Code"
+    case .browserPkce:
+      return "Browser (PKCE)"
+    }
+  }
+}
+
 struct LocalConfigSummary: Codable, Identifiable, Equatable, Sendable {
   let id: String
   var settingName: String
@@ -241,6 +257,7 @@ struct ConfigDraft: Codable, Equatable, Sendable {
   var ssoStartUrl = ""
   var ssoIssuerUrl = ""
   var ssoRegion = ""
+  var ssoLoginMethod: SSOSignInMethod = .deviceCode
   var ssoUsername = ""
   var ssoPassword = ""
   var ssoMfaTotp = ""
@@ -271,6 +288,7 @@ struct ConfigDraft: Codable, Equatable, Sendable {
     case ssoStartUrl
     case ssoIssuerUrl
     case ssoRegion
+    case ssoLoginMethod
     case ssoUsername
     case ssoPassword
     case ssoMfaTotp
@@ -301,6 +319,7 @@ struct ConfigDraft: Codable, Equatable, Sendable {
     ssoStartUrl = try container.decodeIfPresent(String.self, forKey: .ssoStartUrl) ?? ""
     ssoIssuerUrl = try container.decodeIfPresent(String.self, forKey: .ssoIssuerUrl) ?? ""
     ssoRegion = try container.decodeIfPresent(String.self, forKey: .ssoRegion) ?? ""
+    ssoLoginMethod = try container.decodeIfPresent(SSOSignInMethod.self, forKey: .ssoLoginMethod) ?? .deviceCode
     ssoUsername = try container.decodeIfPresent(String.self, forKey: .ssoUsername) ?? ""
     ssoPassword = try container.decodeIfPresent(String.self, forKey: .ssoPassword) ?? ""
     ssoMfaTotp = try container.decodeIfPresent(String.self, forKey: .ssoMfaTotp) ?? ""

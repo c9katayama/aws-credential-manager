@@ -281,6 +281,45 @@ func TestDecodeConfigInputFallsBackToGenericFieldTitles(t *testing.T) {
 	}
 }
 
+func TestDecodeConfigInputDefaultsSSOLoginMethodForLegacyItems(t *testing.T) {
+	item := onepassword.Item{
+		ID:      "item-1",
+		VaultID: "vault-1",
+		Fields: []onepassword.ItemField{
+			{
+				ID:        "auth_type",
+				FieldType: onepassword.ItemFieldTypeText,
+				Value:     "sso",
+			},
+			{
+				ID:        "sso_start_url",
+				FieldType: onepassword.ItemFieldTypeURL,
+				Value:     "https://example.awsapps.com/start",
+			},
+			{
+				ID:        "sso_region",
+				FieldType: onepassword.ItemFieldTypeText,
+				Value:     "ap-northeast-1",
+			},
+			{
+				ID:        "sso_account_id",
+				FieldType: onepassword.ItemFieldTypeText,
+				Value:     "123456789012",
+			},
+			{
+				ID:        "sso_role_name",
+				FieldType: onepassword.ItemFieldTypeText,
+				Value:     "AdministratorAccess",
+			},
+		},
+	}
+
+	input := decodeConfigInput(item, "cfg-legacy")
+	if input.SSOLoginMethod != "deviceCode" {
+		t.Fatalf("expected legacy sso item to default to deviceCode, got %q", input.SSOLoginMethod)
+	}
+}
+
 func TestShouldRetryClientErrorWhenDesktopAppDropsConnection(t *testing.T) {
 	err := shouldRetryClientError(errors.New("connection was unexpectedly dropped by the desktop app"))
 	if !err {

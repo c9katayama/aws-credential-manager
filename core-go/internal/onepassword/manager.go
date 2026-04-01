@@ -724,6 +724,7 @@ func buildManagedFields(input metadata.ConfigInput) []onepassword.ItemField {
 			newField(ssoSectionID, "sso_start_url", "SSO Start URL", onepassword.ItemFieldTypeURL, input.SSOStartURL),
 			newField(ssoSectionID, "sso_issuer_url", "SSO Issuer URL", onepassword.ItemFieldTypeURL, input.SSOIssuerURL),
 			newField(ssoSectionID, "sso_region", "SSO Region", onepassword.ItemFieldTypeText, input.SSORegion),
+			newField(ssoSectionID, "sso_login_method", "SSO Sign-in Method", onepassword.ItemFieldTypeText, input.SSOLoginMethod),
 			newField(ssoSectionID, "sso_username", "Username", onepassword.ItemFieldTypeText, input.SSOUsername),
 			newField(ssoSectionID, "sso_password", "Password", onepassword.ItemFieldTypeConcealed, input.SSOPassword),
 			newMFAField(ssoSectionID, canonicalTOTPFieldID("sso_mfa_totp"), "MFA TOTP", input.SSOMFATOTP),
@@ -818,6 +819,8 @@ func decodeConfigInput(item onepassword.Item, id string) metadata.ConfigInput {
 			input.SSOIssuerURL = value
 		case "sso_region":
 			input.SSORegion = value
+		case "sso_login_method":
+			input.SSOLoginMethod = value
 		case "sso_username":
 			input.SSOUsername = value
 		case "sso_password":
@@ -920,6 +923,10 @@ func applyImportFallbacks(item onepassword.Item, input *metadata.ConfigInput) {
 			if strings.TrimSpace(input.SSORegion) == "" {
 				input.SSORegion = value
 			}
+		case "sso_login_method":
+			if strings.TrimSpace(input.SSOLoginMethod) == "" {
+				input.SSOLoginMethod = value
+			}
 		case "sso_username":
 			if strings.TrimSpace(input.SSOUsername) == "" {
 				input.SSOUsername = value
@@ -981,6 +988,9 @@ func applyImportFallbacks(item onepassword.Item, input *metadata.ConfigInput) {
 		case strings.TrimSpace(input.AWSAccessKeyID) != "" || strings.TrimSpace(input.MFAArn) != "" || strings.TrimSpace(input.RoleArn) != "":
 			input.AuthType = "sts"
 		}
+	}
+	if strings.TrimSpace(input.AuthType) == "sso" && strings.TrimSpace(input.SSOLoginMethod) == "" {
+		input.SSOLoginMethod = "deviceCode"
 	}
 }
 

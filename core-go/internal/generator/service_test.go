@@ -163,6 +163,13 @@ func TestGenerateSSOPersistsSessionState(t *testing.T) {
 		ProfileName:            "demo",
 		VaultID:                "vault",
 		ItemID:                 "item",
+		SSOStartURL:            "https://example.awsapps.com/start",
+		SSORegion:              "ap-northeast-1",
+		SSOUsername:            "demo@example.com",
+		SSOPassword:            "password",
+		SSOMFATOTP:             "otpauth://totp/example?secret=ABCDEF1234567890",
+		SSOAccountID:           "123456789012",
+		SSORoleName:            "AdministratorAccess",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -211,6 +218,13 @@ func TestGenerateUsesBoundedOnePasswordTimeoutForLoad(t *testing.T) {
 		ProfileName:            "demo",
 		VaultID:                "vault",
 		ItemID:                 "item",
+		SSOStartURL:            "https://example.awsapps.com/start",
+		SSORegion:              "ap-northeast-1",
+		SSOUsername:            "demo@example.com",
+		SSOPassword:            "password",
+		SSOMFATOTP:             "otpauth://totp/example?secret=ABCDEF1234567890",
+		SSOAccountID:           "123456789012",
+		SSORoleName:            "AdministratorAccess",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -252,6 +266,13 @@ func TestGenerateUsesBoundedOnePasswordTimeoutForPersist(t *testing.T) {
 		ProfileName:            "demo",
 		VaultID:                "vault",
 		ItemID:                 "item",
+		SSOStartURL:            "https://example.awsapps.com/start",
+		SSORegion:              "ap-northeast-1",
+		SSOUsername:            "demo@example.com",
+		SSOPassword:            "password",
+		SSOMFATOTP:             "otpauth://totp/example?secret=ABCDEF1234567890",
+		SSOAccountID:           "123456789012",
+		SSORoleName:            "AdministratorAccess",
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -10,7 +10,7 @@ APP_EXECUTABLE_NAME="AwsCredentialManagerApp"
 HELPER_NAME="aws-credential-manager-helper"
 RESOURCE_BUNDLE_NAME="app-macos_App.bundle"
 ZIP_PATH="$DIST_DIR/aws-credential-manager-macos.zip"
-VERSION="${VERSION:-0.1.4}"
+VERSION="${VERSION:-0.1.5}"
 
 echo "==> Building Go helper"
 "$ROOT_DIR/scripts/build-helper.sh"

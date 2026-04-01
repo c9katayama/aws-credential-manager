@@ -21,7 +21,7 @@ import (
 const (
 	accountEnvVar      = "AWS_CREDENTIAL_MANAGER_1PASSWORD_ACCOUNT"
 	integrationName    = "aws-credential-manager"
-	integrationVer     = "0.1.4"
+	integrationVer     = "0.1.5"
 	managedTag         = "aws-credential-manager"
 	schemaVersion      = "1"
 	clientRetryMax     = 3

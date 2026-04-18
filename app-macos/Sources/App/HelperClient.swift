@@ -113,6 +113,31 @@ final class HelperClient: @unchecked Sendable {
       }
     }
 
+    if let developmentHelperPath = resolveDevelopmentHelperPath() {
+      return developmentHelperPath
+    }
+
+    return nil
+  }
+
+  private func resolveDevelopmentHelperPath() -> String? {
+    guard let executableURL = Bundle.main.executableURL else {
+      return nil
+    }
+
+    var currentURL = executableURL.deletingLastPathComponent()
+    for _ in 0..<8 {
+      let candidate = currentURL
+        .appendingPathComponent("core-go", isDirectory: true)
+        .appendingPathComponent("bin", isDirectory: true)
+        .appendingPathComponent("aws-credential-manager-helper")
+        .path
+      if FileManager.default.isExecutableFile(atPath: candidate) {
+        return candidate
+      }
+      currentURL.deleteLastPathComponent()
+    }
+
     return nil
   }
 
@@ -153,7 +178,7 @@ final class HelperClient: @unchecked Sendable {
     try send(method: "health.check", params: Optional<EmptyParams>.none, timeout: timeout)
   }
 
-  func listConfigs(timeout: TimeInterval = 5.0) throws -> HelperListResponse {
+  func listConfigs(timeout: TimeInterval = 30.0) throws -> HelperListResponse {
     try send(method: "configs.list", params: Optional<EmptyParams>.none, timeout: timeout)
   }
 

@@ -24,6 +24,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     self.statusItem = statusItem
 
     window = makeWindow()
+    viewModel.setOpenOnePasswordHandler { [weak self] in
+      self?.openOnePassword()
+    }
     viewModel.bootstrap()
   }
 
@@ -51,6 +54,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     NSApp.activate(ignoringOtherApps: true)
     window.makeKeyAndOrderFront(nil)
     window.center()
+  }
+
+  private func openOnePassword() {
+    NSApp.activate(ignoringOtherApps: true)
+    NSWorkspace.shared.launchApplication("1Password")
   }
 
   private func makeWindow() -> NSWindow {

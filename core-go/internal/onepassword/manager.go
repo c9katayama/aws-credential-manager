@@ -464,6 +464,18 @@ func (m *Manager) resetClient(accountName string) {
 	}
 }
 
+func (m *Manager) HasCachedClient(accountName string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.client == nil || m.account != accountName {
+		return false
+	}
+	if m.lastClientUse.IsZero() || time.Since(m.lastClientUse) > clientMaxIdle {
+		return false
+	}
+	return true
+}
+
 func shouldRetryClientError(err error) bool {
 	if err == nil {
 		return false

@@ -76,8 +76,6 @@ struct ContentView: View {
         items: viewModel.availableItems,
         isLoadingOptions: viewModel.isLoadingEditorOptions,
         onConnectOnePassword: {
-          NSApp.activate(ignoringOtherApps: true)
-          NSWorkspace.shared.launchApplication("1Password")
           Task {
             if await viewModel.connectOnePassword(
               forceReconnect: true,
@@ -190,7 +188,7 @@ struct ContentView: View {
         Text(viewModel.helperStatus)
           .font(.subheadline)
         Spacer()
-        Button("Refresh") {
+        Button("Reload App Data") {
           Task {
             await viewModel.refresh()
           }
@@ -212,8 +210,6 @@ struct ContentView: View {
         Spacer()
         if viewModel.shouldShowOnePasswordAction {
           Button(viewModel.onePasswordActionTitle) {
-            NSApp.activate(ignoringOtherApps: true)
-            NSWorkspace.shared.launchApplication("1Password")
             Task {
               await viewModel.reconnectConfiguredOnePassword()
             }

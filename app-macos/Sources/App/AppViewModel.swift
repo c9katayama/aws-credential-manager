@@ -46,9 +46,11 @@ final class AppViewModel: ObservableObject {
   @Published var accountSettingsNewAccount = ""
 
   private let helperClient: HelperClient
-  private let onePasswordStatusTimeout: TimeInterval = 30.0
+  private let onePasswordStatusTimeout: TimeInterval = 15.0
+  private let onePasswordReconnectTimeout: TimeInterval = 20.0
   private let onePasswordInteractiveTimeout: TimeInterval = 180.0
-  private let onePasswordHeartbeatIntervalNanoseconds: UInt64 = 5 * 60 * 1_000_000_000
+  private let onePasswordHeartbeatIntervalNanoseconds: UInt64 = 60 * 1_000_000_000
+  private let onePasswordDesktopWarmupNanoseconds: UInt64 = 1_500 * 1_000_000
   private var onePasswordHeartbeatTask: Task<Void, Never>?
 
   init(helperClient: HelperClient) {
@@ -66,12 +68,14 @@ final class AppViewModel: ObservableObject {
     if needsOnePasswordReconnect {
       return "Reconnect 1Password"
     }
+    if isOnePasswordAuthorized {
+      return "Check 1Password"
+    }
     return "Connect 1Password"
   }
 
   var shouldShowOnePasswordAction: Bool {
     !settingsDraft.selectedOnePasswordAccountName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      && !isOnePasswordAuthorized
   }
 
   var onePasswordStatusColor: Color {
@@ -88,10 +92,19 @@ final class AppViewModel: ObservableObject {
   }
 
   func bootstrap() {
-    Task { await refresh() }
+    Task {
+      await refresh()
+      let accountName = selectedOnePasswordAccountName
+      guard !accountName.isEmpty else { return }
+      _ = await connectOnePassword(
+        forceReconnect: true,
+        accountName: accountName,
+        activateIfNeeded: openOnePasswordForAuthorization
+      )
+    }
   }
 
-  func refresh() async {
+  func refresh(checkOnePassword: Bool = false) async {
     isLoading = true
     defer { isLoading = false }
 
@@ -111,13 +124,29 @@ final class AppViewModel: ObservableObject {
       settingsDraft.normalize()
       settingsPath = settings.path
       let selectedAccount = settingsDraft.selectedOnePasswordAccountName.trimmingCharacters(in: .whitespacesAndNewlines)
-      updateOnePasswordDisplay(
-        isConfigured: !selectedAccount.isEmpty,
-        accountName: selectedAccount,
-        fallbackMessage: selectedAccount.isEmpty
-          ? health.onePassword.message
-          : "Connection has not been checked yet."
-      )
+      if checkOnePassword && !selectedAccount.isEmpty {
+        _ = await connectOnePassword(
+          forceReconnect: true,
+          accountName: selectedAccount
+        )
+      } else if isOnePasswordAuthorized && !selectedAccount.isEmpty {
+        setOnePasswordDisplay(
+          title: "Connected (\(selectedAccount))",
+          detail: "1Password desktop app is reachable.",
+          tone: .success,
+          isAuthorized: true,
+          needsReconnect: false,
+          needsAuthorization: false
+        )
+      } else {
+        updateOnePasswordDisplay(
+          isConfigured: !selectedAccount.isEmpty,
+          accountName: selectedAccount,
+          fallbackMessage: selectedAccount.isEmpty
+            ? health.onePassword.message
+            : "Connection has not been checked yet."
+        )
+      }
       lastError = nil
     } catch {
       lastError = error.localizedDescription
@@ -310,10 +339,18 @@ final class AppViewModel: ObservableObject {
   func reconnectConfiguredOnePassword() async {
     let accountName = selectedOnePasswordAccountName
     guard !accountName.isEmpty else { return }
-    _ = await connectOnePassword(forceReconnect: true, accountName: accountName)
+    _ = await connectOnePassword(
+      forceReconnect: true,
+      accountName: accountName,
+      activateIfNeeded: openOnePasswordForAuthorization
+    )
   }
 
-  func connectOnePassword(forceReconnect: Bool = false, accountName: String? = nil) async -> Bool {
+  func connectOnePassword(
+    forceReconnect: Bool = false,
+    accountName: String? = nil,
+    activateIfNeeded: (@MainActor () -> Void)? = nil
+  ) async -> Bool {
     let resolvedAccount = (accountName ?? selectedOnePasswordAccountName).trimmingCharacters(in: .whitespacesAndNewlines)
     guard !resolvedAccount.isEmpty else {
       updateOnePasswordDisplay(
@@ -338,7 +375,8 @@ final class AppViewModel: ObservableObject {
     do {
       let vaultsResponse = try await waitForOnePasswordConnection(
         accountName: resolvedAccount,
-        forceReconnect: forceReconnect
+        forceReconnect: forceReconnect,
+        activateIfNeeded: activateIfNeeded
       )
       availableVaults = sortVaults(vaultsResponse.vaults)
       setOnePasswordDisplay(
@@ -504,7 +542,7 @@ final class AppViewModel: ObservableObject {
     isOnePasswordAuthorized = isAuthorized
     needsOnePasswordReconnect = needsReconnect
     needsOnePasswordAuthorization = needsAuthorization
-    syncOnePasswordHeartbeat(isAuthorized: isAuthorized)
+    syncOnePasswordHeartbeat()
   }
 
   private func applyOnePasswordStatus(_ status: OnePasswordStatus, fallbackAccountName: String?) {
@@ -698,16 +736,42 @@ final class AppViewModel: ObservableObject {
     return normalized
   }
 
-  private func waitForOnePasswordConnection(accountName: String, forceReconnect: Bool) async throws -> OnePasswordVaultsResponse {
+  private var openOnePasswordForAuthorization: @MainActor () -> Void = {}
+
+  func setOpenOnePasswordHandler(_ handler: @escaping @MainActor () -> Void) {
+    openOnePasswordForAuthorization = handler
+  }
+
+  private func waitForOnePasswordConnection(
+    accountName: String,
+    forceReconnect: Bool,
+    activateIfNeeded: (@MainActor () -> Void)? = nil
+  ) async throws -> OnePasswordVaultsResponse {
     let helperClient = self.helperClient
-    let timeout = onePasswordInteractiveTimeout
+    let interactiveTimeout = onePasswordInteractiveTimeout
     if !forceReconnect {
       return try await run {
-        try helperClient.onePasswordVaults(accountName: accountName, timeout: timeout)
+        try helperClient.onePasswordVaults(accountName: accountName, timeout: interactiveTimeout)
       }
     }
 
-    let deadline = Date().addingTimeInterval(timeout)
+    let deadline = Date().addingTimeInterval(interactiveTimeout)
+
+    setOnePasswordDisplay(
+      title: "Connecting (\(accountName))",
+      detail: "Re-establishing connection to 1Password desktop app.",
+      tone: .neutral,
+      isAuthorized: false,
+      needsReconnect: false,
+      needsAuthorization: false
+    )
+
+    if let vaults = try await tryReconnectAndListVaults(
+      accountName: accountName,
+      deadline: deadline
+    ) {
+      return vaults
+    }
 
     setOnePasswordDisplay(
       title: "Connecting (\(accountName))",
@@ -718,24 +782,56 @@ final class AppViewModel: ObservableObject {
       needsAuthorization: false
     )
 
+    activateIfNeeded?()
+    try? await Task.sleep(nanoseconds: onePasswordDesktopWarmupNanoseconds)
+
+    if let vaults = try await tryReconnectAndListVaults(
+      accountName: accountName,
+      deadline: deadline
+    ) {
+      return vaults
+    }
+
     try await run {
       try helperClient.restart()
     }
 
+    let remaining = max(1.0, deadline.timeIntervalSinceNow)
+    return try await run {
+      try helperClient.onePasswordVaults(accountName: accountName, timeout: remaining)
+    }
+  }
+
+  private func tryReconnectAndListVaults(
+    accountName: String,
+    deadline: Date
+  ) async throws -> OnePasswordVaultsResponse? {
+    let helperClient = self.helperClient
+    let reconnectTimeout = min(onePasswordReconnectTimeout, max(1.0, deadline.timeIntervalSinceNow))
+
+    let status: OnePasswordStatus
     do {
-      return try await run {
-        try helperClient.onePasswordVaults(accountName: accountName, timeout: timeout)
+      let response = try await run {
+        try helperClient.onePasswordReconnect(accountName: accountName, timeout: reconnectTimeout)
       }
+      status = response.status
     } catch {
-      if shouldRetryInteractiveConnection(error) && Date() < deadline {
-        return try await run {
-          try helperClient.onePasswordVaults(
-            accountName: accountName,
-            timeout: max(1.0, deadline.timeIntervalSinceNow)
-          )
-        }
+      if shouldRetryInteractiveConnection(error) {
+        return nil
       }
       throw error
+    }
+
+    if isAuthorizationRequired(status.message) {
+      throw OnePasswordConnectError(message: status.message)
+    }
+    guard status.connected else {
+      return nil
+    }
+
+    let remaining = max(1.0, deadline.timeIntervalSinceNow)
+    return try await run {
+      try helperClient.onePasswordVaults(accountName: accountName, timeout: remaining)
     }
   }
 
@@ -745,6 +841,7 @@ final class AppViewModel: ObservableObject {
       while !Task.isCancelled {
         try? await Task.sleep(nanoseconds: self?.onePasswordHeartbeatIntervalNanoseconds ?? 0)
         guard let self else { return }
+        if Task.isCancelled { return }
         await self.performOnePasswordHeartbeat()
       }
     }
@@ -755,25 +852,51 @@ final class AppViewModel: ObservableObject {
     onePasswordHeartbeatTask = nil
   }
 
-  private func syncOnePasswordHeartbeat(isAuthorized: Bool) {
-    if isAuthorized {
-      startOnePasswordHeartbeat()
-    } else {
+  private func syncOnePasswordHeartbeat() {
+    if selectedOnePasswordAccountName.isEmpty || needsOnePasswordAuthorization {
       stopOnePasswordHeartbeat()
+    } else {
+      startOnePasswordHeartbeat()
     }
   }
 
   private func performOnePasswordHeartbeat() async {
     let accountName = selectedOnePasswordAccountName
-    guard isOnePasswordAuthorized, !accountName.isEmpty else { return }
+    guard !accountName.isEmpty, !needsOnePasswordAuthorization else { return }
+
+    let helperClient = self.helperClient
+    let statusTimeout = onePasswordStatusTimeout
 
     do {
-      let helperClient = self.helperClient
-      let timeout = onePasswordStatusTimeout
       let statusResponse = try await run {
-        try helperClient.onePasswordStatus(accountName: accountName, timeout: timeout)
+        try helperClient.onePasswordStatus(accountName: accountName, timeout: statusTimeout)
       }
-      applyOnePasswordStatus(statusResponse.status, fallbackAccountName: accountName)
+      if statusResponse.status.connected {
+        applyOnePasswordStatus(statusResponse.status, fallbackAccountName: accountName)
+        return
+      }
+      if isAuthorizationRequired(statusResponse.status.message) {
+        applyOnePasswordStatus(statusResponse.status, fallbackAccountName: accountName)
+        return
+      }
+      await attemptSilentReconnect(accountName: accountName)
+    } catch {
+      if shouldRetryInteractiveConnection(error) {
+        await attemptSilentReconnect(accountName: accountName)
+      } else {
+        applyOnePasswordError(error, accountName: accountName)
+      }
+    }
+  }
+
+  private func attemptSilentReconnect(accountName: String) async {
+    let helperClient = self.helperClient
+    let timeout = onePasswordReconnectTimeout
+    do {
+      let response = try await run {
+        try helperClient.onePasswordReconnect(accountName: accountName, timeout: timeout)
+      }
+      applyOnePasswordStatus(response.status, fallbackAccountName: accountName)
     } catch {
       applyOnePasswordError(error, accountName: accountName)
     }

@@ -309,13 +309,20 @@ func (r *Router) enrichConfigSummaries(configs []metadata.ConfigSummary) []metad
 	copy(enriched, configs)
 	selectedAccount := r.selectedOnePasswordAccountName()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
 	for i := range enriched {
 		if selectedAccount != "" {
 			enriched[i].OnePasswordAccountName = selectedAccount
 		}
+	}
+
+	if selectedAccount == "" || !r.opManager.HasCachedClient(selectedAccount) {
+		return enriched
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	for i := range enriched {
 		if enriched[i].AuthType != "sso" {
 			continue
 		}
